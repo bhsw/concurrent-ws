@@ -50,13 +50,17 @@ struct App {
 
   static func testServer() async throws {
     let options = WebSocket.Options()
-    let listener = Listener(port: 8765, tls: false, options: options)
+    let listener = Listener(port: 80, tls: false, options: options)
     Task {
-      try await Task.sleep(nanoseconds: 10_000_000_000)
+      try await Task.sleep(nanoseconds: 100_000_000_000)
       listener.stop()
     }
     for try await event in listener {
       switch event {
+        case .ready:
+          print("* Listener ready")
+        case .networkUnavailable:
+          print("* Listener reports network unavailable")
         case .connection(let connection):
           Task {
             print("* Got a client")

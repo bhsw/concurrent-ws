@@ -28,7 +28,7 @@ class Connection: AsyncSequence {
   private let dispatchQueue: DispatchQueue
   private let receiveChunkSize: Int
   private var stream: StreamType!
-  private var streamContinuation: StreamType.Continuation!
+  private var continuation: StreamType.Continuation!
   private var connection: NWConnection
 
   init(with connection: NWConnection, options: WebSocket.Options) {
@@ -42,16 +42,16 @@ class Connection: AsyncSequence {
       self?.connectionStateChanged(to: state)
     }
     connection.viabilityUpdateHandler = { [weak self] value in
-      self?.streamContinuation.yield(.viability(value))
+      self?.continuation.yield(.viability(value))
     }
     connection.betterPathUpdateHandler = { [weak self] value in
-      self?.streamContinuation.yield(.betterPathAvailable(value))
+      self?.continuation.yield(.betterPathAvailable(value))
     }
 
     connection.start(queue: dispatchQueue)
 
     stream = AsyncThrowingStream { continuation in
-      streamContinuation = continuation
+      self.continuation = continuation
     }
   }
 
@@ -88,7 +88,7 @@ class Connection: AsyncSequence {
 
   func close() {
     connection.cancel()
-    streamContinuation.finish()
+    continuation.finish()
   }
 
   func makeAsyncIterator() -> AsyncIterator {
@@ -100,7 +100,7 @@ class Connection: AsyncSequence {
       case .waiting(let error):
         finish(throwing: error)
       case .ready:
-        streamContinuation.yield(.connect)
+        continuation.yield(.connect)
         receive()
       case .failed(let error):
         finish(throwing: error)
@@ -113,11 +113,11 @@ class Connection: AsyncSequence {
     dispatchPrecondition(condition: .onQueue(dispatchQueue))
     connection.receive(minimumIncompleteLength: 1, maximumLength: receiveChunkSize) { [self] data, _, isComplete, error in
       if let data = data {
-        streamContinuation.yield(.receive(data))
+        continuation.yield(.receive(data))
       }
       if (isComplete) {
-        streamContinuation.yield(.receive(nil))
-        streamContinuation.finish()
+        continuation.yield(.receive(nil))
+        continuation.finish()
         return
       }
       if let error = error {
@@ -129,7 +129,7 @@ class Connection: AsyncSequence {
   }
 
   func finish(throwing error: NWError) {
-    streamContinuation.finish(throwing: connectionError(from: error))
+    continuation.finish(throwing: connectionError(from: error))
   }
 
   func connectionError(from error: NWError) -> WebSocket.HandshakeError {

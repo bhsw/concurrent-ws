@@ -3,6 +3,8 @@ import Network
 
 class Listener: AsyncSequence {
   enum Event {
+    case ready
+    case networkUnavailable
     case connection(Connection)
   }
 
@@ -12,13 +14,14 @@ class Listener: AsyncSequence {
 
   private let dispatchQueue: DispatchQueue
   private var stream: StreamType!
-  private var streamContinuation: StreamType.Continuation!
+  private var continuation: StreamType.Continuation!
   private var listener: NWListener?
 
+  // TODO: maybe this doesn't get WebSocket.Options?
   init(port: UInt16, tls: Bool, options: WebSocket.Options) {
     dispatchQueue = DispatchQueue(label: "WebSocket listener on port \(port)")
     stream = AsyncThrowingStream { continuation in
-      streamContinuation = continuation
+      self.continuation = continuation
     }
 
     let params = NWParameters(tls: tls ? NWProtocolTLS.Options() : nil, tcp: NWProtocolTCP.Options())
@@ -28,12 +31,15 @@ class Listener: AsyncSequence {
     do {
       listener = try NWListener(using: params, on: .init(rawValue: port)!)
       listener!.newConnectionHandler = { [weak self] connection in
-        self?.streamContinuation.yield(.connection(Connection(with: connection, options: options)))
+        self?.continuation.yield(.connection(Connection(with: connection, options: options)))
+      }
+      listener!.stateUpdateHandler = { [weak self] state in
+        self?.stateChanged(to: state)
       }
       listener!.start(queue: dispatchQueue)
     } catch {
-      // TODO: we might want to finish with an error here, but it's not really a handshake error
-      streamContinuation.finish()
+      continuation.finish(throwing: WebSocket.ServerError.listenerFailed(reason: error.localizedDescription,
+                                                                         underlyingError: error))
     }
   }
 
@@ -43,10 +49,24 @@ class Listener: AsyncSequence {
 
   func stop() {
     listener?.cancel()
-    streamContinuation.finish()
+    continuation.finish()
   }
 
   func makeAsyncIterator() -> AsyncIterator {
     return stream.makeAsyncIterator()
+  }
+
+  private func stateChanged(to state: NWListener.State) {
+    switch state {
+      case .ready:
+        continuation.yield(.ready)
+      case .waiting(_):
+        continuation.yield(.networkUnavailable)
+      case .failed(let error):
+        continuation.finish(throwing: WebSocket.ServerError.listenerFailed(reason: error.localizedDescription,
+                                                                           underlyingError: error))
+      default:
+        break
+    }
   }
 }
