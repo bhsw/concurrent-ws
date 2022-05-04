@@ -36,7 +36,6 @@ class Connection: AsyncSequence {
     receiveChunkSize = options.receiveChunkSize
 
     let tcp = NWProtocolTCP.Options()
-    tcp.connectionTimeout = Int(options.connectTimeout.rounded(.up))
     tcp.enableFastOpen = options.enableFastOpen
 
     let params = NWParameters(tls: tls ? NWProtocolTLS.Options() : nil, tcp: tcp)

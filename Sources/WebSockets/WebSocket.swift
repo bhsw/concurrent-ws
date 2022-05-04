@@ -2,9 +2,6 @@ import Foundation
 
 // TODO: server support
 // TODO: basic authorization?
-// TODO: parse HTTP message body in the case of errors?
-// TODO: there needs to be a timeout for the HTTP handshake
-// TODO: check maximumIncomingMessageSize as soon as we know the length of an incoming frame; don't wait for all the data
 
 /// A WebSocket endpoint class with a modern API based on [Swift Concurrency](https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html).
 ///
@@ -26,10 +23,10 @@ public actor WebSocket {
     public var maximumRedirects = 5
 
     /// The  number of seconds that the socket will wait for the connection to succeed before throwing an error. Defaults to `30`.
-    public var connectTimeout: TimeInterval = 30
+    public var openingHandshakeTimeout: TimeInterval = 30
 
     /// The  number of seconds that the socket will wait for the other endpoint to acknowledge a request to close the connection. Defaults to `30`.
-    public var closeAcknowledgementTimeout: TimeInterval = 30
+    public var closingHandshakeTimeout: TimeInterval = 30
 
     /// Whether to enable TCP fast open. Defaults to `false`.
     public var enableFastOpen: Bool = false
@@ -41,7 +38,8 @@ public actor WebSocket {
     /// The maximum number of incoming bytes handled during a single receive operation. Defaults to `32768`.
     public var receiveChunkSize: Int = 32768
 
-    /// Additional headers to add to the initial HTTP request. The dictionary maps header names to associated values.
+    /// Additional headers to add to the initial HTTP request. The dictionary maps header names to associated values. Note that headers that are relied upon
+    /// to complete the handshake  (such as `Sec-*` or `Upgrade`) are considered forbidden and will be ignored if included.
     public var extraHeaders: [String: String] = [:]
 
     /// Initializes a default set of WebSocket options.
@@ -118,7 +116,8 @@ public actor WebSocket {
   private var pendingCloseReason: String?
   private var parkedSends: [ParkedSend] = []
   private var redirectCount = 0
-  private var graceTimerTask: Task<Void, Never>?
+  private var handshakeTimerTask: Task<Void, Never>?
+  private var openingHandshakeDidExpire = false
 
   /// Initializes a new `WebSocket` instance.
   ///
@@ -212,7 +211,7 @@ public actor WebSocket {
   /// * If `connecting`, the underlying connection will be canceled, the socket will immediately enter the `closed` state, and the event sequence
   ///   will finish without producing any events.
   /// * If `open`, the socket will immediately enter the `closing` state, and a `close` frame will be sent to the other endpoint. Once a `close`
-  ///   frame is received from the other endpoint, or if the configured `closeAcknowledgementTimeout` expires prior to receiving a response,
+  ///   frame is received from the other endpoint, or if the configured `closingHandshakeTimeout` expires prior to receiving a response,
   ///   the underlying connection will be closed, and the socket will enter the `closed` state. In every case, a `close` event will be added to
   ///   the socket's event sequence as the final event.
   /// * If `closing` or `closed`, this function has no effect.
@@ -235,9 +234,9 @@ public actor WebSocket {
         if (await sendNow(frame: .close(pendingCloseCode!, reason))) {
           didSendCloseFrame = true
         }
-        graceTimerTask = Task(priority: TaskPriority.low) {
+        handshakeTimerTask = Task(priority: TaskPriority.low) {
           do {
-            try await Task.sleep(nanoseconds: UInt64(options.closeAcknowledgementTimeout * 1_000_000_000))
+            try await Task.sleep(nanoseconds: UInt64(options.closingHandshakeTimeout * 1_000_000_000))
             connection?.close()
           } catch {
           }
@@ -314,6 +313,19 @@ private extension WebSocket {
     }
 
     readyState = .connecting
+    if (handshakeTimerTask == nil) {
+      // When a redirect has occured, the handshake timer will already be running.
+      handshakeTimerTask = Task(priority: TaskPriority.low) {
+        do {
+          try await Task.sleep(nanoseconds: UInt64(options.openingHandshakeTimeout * 1_000_000_000))
+          openingHandshakeDidExpire = true
+          connection?.close()
+          readyState = .closed
+        } catch {
+        }
+      }
+    }
+
     let useTLS = scheme == "wss"
     let port = UInt16(url.port ?? (useTLS ? 443 : 80))
     connection = Connection(host: host, port: port, tls: useTLS, options: options)
@@ -328,6 +340,7 @@ private extension WebSocket {
               case .incomplete:
                 continue
               case .ready(result: let result, unconsumed: let unconsumed):
+                cancelHandshakeTimer()
                 inputFramer.push(unconsumed)
                 readyState = .open
                 for parked in parkedSends {
@@ -353,10 +366,14 @@ private extension WebSocket {
             continue
         }
       }
+      if openingHandshakeDidExpire {
+        throw HandshakeError.timeout
+      }
       throw HandshakeError.unexpectedDisconnect
     } catch let error as HandshakeError {
-      let wasCanceled = readyState == .closed
-      if (!wasCanceled) {
+      cancelHandshakeTimer()
+      let suppressError = readyState == .closed && !openingHandshakeDidExpire
+      if readyState != .closed {
         connection!.close()
       }
       connection = nil
@@ -365,7 +382,7 @@ private extension WebSocket {
         parked.continuation.resume(returning: false)
       }
       parkedSends.removeAll()
-      if (wasCanceled) {
+      if (suppressError) {
         return nil
       }
       throw error
@@ -465,10 +482,7 @@ private extension WebSocket {
   /// - Returns: The `close` event.
   func finishClose() -> Event {
     precondition(readyState == .closing)
-    if (graceTimerTask != nil) {
-      graceTimerTask?.cancel()
-      graceTimerTask = nil
-    }
+    cancelHandshakeTimer()
     connection!.close()
     connection = nil
     readyState = .closed
@@ -486,5 +500,13 @@ private extension WebSocket {
       return false
     }
     return await connection!.send(data: outputFramer.pop()!)
+  }
+
+  /// Cancels the handshake timer if it is running.
+  func cancelHandshakeTimer() {
+    if (handshakeTimerTask != nil) {
+      handshakeTimerTask?.cancel()
+      handshakeTimerTask = nil
+    }
   }
 }

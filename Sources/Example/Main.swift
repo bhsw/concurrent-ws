@@ -19,8 +19,8 @@ struct App {
 //    let url = URL(string: "wss://blob.ocsoft.com/redirect-test")!
 //    let url = URL(string: "wss://github.com")!
     var options = WebSocket.Options()
-    options.closeAcknowledgementTimeout = 3
-    options.connectTimeout = 5
+    options.closingHandshakeTimeout = 3
+    options.openingHandshakeTimeout = 1
     let sock = WebSocket(url: url, options: options)
     let t = Task {
       await sock.send(text: "{ \"op\": \"nope\" }")

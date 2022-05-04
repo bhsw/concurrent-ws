@@ -197,8 +197,8 @@ internal struct InputFramer {
             return
           }
           self.opcode = opcode
-          if (opcode.isMessage) {
-              messageOpcode = opcode
+          if (opcode.isMessageStart) {
+            messageOpcode = opcode
           }
           fin = c & 0x80 != 0
           state.next()
@@ -220,7 +220,9 @@ internal struct InputFramer {
               }
             case 1...125:
               payloadLength = UInt64(c)
-              state = masked ? .maskKey0 : opcode!.isMessage ? .messagePayload : .controlPayload
+              guard acceptPayloadLength() else {
+                return
+              }
             case 126:
               state = .shortExtendedLength0
             default:
@@ -232,16 +234,17 @@ internal struct InputFramer {
         case .shortExtendedLength1, .longExtendedLength7:
           payloadLength <<= 8
           payloadLength |= UInt64(c)
-          state = masked ? .maskKey0 : opcode!.isMessage ? .messagePayload : .controlPayload
+          guard payloadLength < Int.max else {
+            emit(frame: .protocolError(.invalidLength))
+            return
+          }
+          guard acceptPayloadLength() else {
+            return
+          }
         case .longExtendedLength1, .longExtendedLength2, .longExtendedLength3,
             .longExtendedLength4, .longExtendedLength5, .longExtendedLength6:
           payloadLength <<= 8
           payloadLength |= UInt64(c)
-          guard payloadLength < Int.max else {
-            // There's no recovery from this error. The caller should tear down the connection.
-            emit(frame: .protocolError(.invalidLength))
-            return
-          }
           state.next()
         case .maskKey0:
           maskKey = UInt32(c)
@@ -265,10 +268,6 @@ internal struct InputFramer {
           }
           let count = min(payloadRemaining, input.endIndex - index)
           messagePayload!.append(input[index..<index + count])
-          guard messagePayload!.count <= maximumMessageSize else {
-            emit(frame: .policyViolation(.maximumMessageSizeExceeded))
-            return
-          }
           payloadRemaining -= count
           index += count
           if (payloadRemaining == 0) {
@@ -321,6 +320,20 @@ internal struct InputFramer {
     opcode = nil
     messageOpcode = nil
     fatal = false
+  }
+
+  private mutating func acceptPayloadLength() -> Bool {
+    if opcode!.isMessage {
+      let remaining = maximumMessageSize - (messagePayload?.count ?? 0)
+      guard remaining >= payloadLength else {
+        emit(frame: .policyViolation(.maximumMessageSizeExceeded))
+        return false
+      }
+      state = masked ? .maskKey0 : .messagePayload
+    } else {
+      state = masked ? .maskKey0 : .controlPayload
+    }
+    return true
   }
 
   private mutating func finishZeroLengthPayload() {
@@ -404,8 +417,12 @@ enum Opcode : UInt8 {
   case ping = 9
   case pong = 10
 
-  var isMessage: Bool {
+  var isMessageStart: Bool {
     self == .text || self == .binary
+  }
+
+  var isMessage: Bool {
+    self == .text || self == .binary || self == .continuation
   }
 }
 

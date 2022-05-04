@@ -88,6 +88,9 @@ extension WebSocket {
     /// The other endpoint dropped the connection before the handshake completed.
     case unexpectedDisconnect
 
+    /// The handshake did not complete within the specified timeframe.
+    case timeout
+
     /// The redirect limit was exceeded. This usually indicates a redirect loop.
     case maxRedirectsExceeded
 
