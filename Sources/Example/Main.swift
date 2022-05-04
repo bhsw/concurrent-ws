@@ -1,11 +1,12 @@
 import Foundation
-import WebSockets
+@testable import WebSockets
 
 @main
 struct App {
   static func main() async {
     do {
-      try await testClient()
+//      try await testClient()
+      try await testServer()
     } catch {
       print("ERROR:", error)
     }
@@ -45,5 +46,36 @@ struct App {
     }
 
     await t.value
+  }
+
+  static func testServer() async throws {
+    let options = WebSocket.Options()
+    let listener = Listener(port: 8765, tls: false, options: options)
+    Task {
+      try await Task.sleep(nanoseconds: 10_000_000_000)
+      listener.stop()
+    }
+    for try await event in listener {
+      switch event {
+        case .connection(let connection):
+          Task {
+            print("* Got a client")
+            for try await event in connection {
+              switch event {
+                case .connect:
+                  print("* Client connect event")
+                case .receive(let data):
+                  if let data = data {
+                    print("RECEIVE:", data)
+                  } else {
+                    print("END")
+                  }
+                default:
+                  break
+              }
+            }
+          }
+      }
+    }
   }
 }

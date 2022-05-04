@@ -31,18 +31,13 @@ class Connection: AsyncSequence {
   private var streamContinuation: StreamType.Continuation!
   private var connection: NWConnection
 
-  init(host: String, port: UInt16, tls: Bool, options: WebSocket.Options) {
-    dispatchQueue = DispatchQueue(label: "WebSocket \(host):\(port)")
+  init(with connection: NWConnection, options: WebSocket.Options) {
+    let endpoint = connection.endpoint
+    dispatchQueue = DispatchQueue(label: "WebSocket \(endpoint)")
     receiveChunkSize = options.receiveChunkSize
 
-    let tcp = NWProtocolTCP.Options()
-    tcp.enableFastOpen = options.enableFastOpen
+    self.connection = connection
 
-    let params = NWParameters(tls: tls ? NWProtocolTLS.Options() : nil, tcp: tcp)
-    params.allowLocalEndpointReuse = true
-    params.includePeerToPeer = true
-
-    connection = NWConnection(host: .init(host), port: .init(rawValue: UInt16(port))!, using: params)
     connection.stateUpdateHandler = { [weak self] state in
       self?.connectionStateChanged(to: state)
     }
@@ -58,6 +53,22 @@ class Connection: AsyncSequence {
     stream = AsyncThrowingStream { continuation in
       streamContinuation = continuation
     }
+  }
+
+  deinit {
+    print("* connection deinit")
+  }
+
+  convenience init(host: String, port: UInt16, tls: Bool, options: WebSocket.Options) {
+    let tcp = NWProtocolTCP.Options()
+    tcp.enableFastOpen = options.enableFastOpen
+
+    let params = NWParameters(tls: tls ? NWProtocolTLS.Options() : nil, tcp: tcp)
+    params.allowLocalEndpointReuse = true
+    params.includePeerToPeer = true
+
+    let connection = NWConnection(host: .init(host), port: .init(rawValue: UInt16(port))!, using: params)
+    self.init(with: connection, options: options)
   }
 
   @discardableResult

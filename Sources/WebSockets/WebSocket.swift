@@ -2,6 +2,7 @@ import Foundation
 
 // TODO: server support
 // TODO: basic authorization?
+// TODO: linux support
 
 /// A WebSocket endpoint class with a modern API based on [Swift Concurrency](https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html).
 ///
