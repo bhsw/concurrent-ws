@@ -385,6 +385,9 @@ private extension WebSocket {
       for try await event in connection! {
         switch event {
           case .receive(let data):
+            guard let data = data else {
+              break
+            }
             inputFramer.push(data)
             if let event = await checkForInputFrame() {
               return event

@@ -9,6 +9,7 @@ extension WebSocket {
   public struct HandshakeResult {
     /// The subprotocol confirmed by the other endpoint, or `nil` if no subprotocol is in effect.
     public let subprotocol: String?
+
     /// Any headers received in the HTTP response that were not pertinent to the WebSocket handshake. The dictionary maps lowercase header names to associated values.
     public let extraHeaders: [String: String]
   }
@@ -17,10 +18,27 @@ extension WebSocket {
   public struct FailedHandshakeResult {
     /// The HTTP status code.
     public let statusCode: Int
+
     /// The HTTP reason string.
     public let reason: String
+
     /// Any headers received in the HTTP response that were not pertinent to the WebSocket handshake. The dictionary maps lowercase header names to associated values.
     public let extraHeaders: [String: String]
+
+    /// The content type of the response body, if any.
+    public let contentType: ContentType?
+
+    // The response body if one was provided.
+    public let content: Data?
+  }
+
+  /// The content type of a response body.
+  public struct ContentType {
+    /// The media type (e.g. `text/plain`).
+    public let mediaType: String
+
+    /// The character set (e.g. `UTF-8`) used if the content is text.
+    public let charset: String?
   }
 
   /// A type of error that may be thrown during the `connecting` state of the socket.
@@ -115,7 +133,7 @@ extension WebSocket {
       return encoded
     }
 
-    func receive(data: Data) throws -> Status {
+    func receive(data: Data?) throws -> Status {
       switch parser.append(data) {
         case .incomplete:
           return .incomplete
@@ -126,7 +144,7 @@ extension WebSocket {
       }
     }
 
-    func handleResponse(_ message: HTTPMessage, unconsumed: Data) throws -> Status {
+    private func handleResponse(_ message: HTTPMessage, unconsumed: Data) throws -> Status {
       switch message.statusCode! {
         case 101:
           guard message.upgrade.contains(.init(name: "websocket")) == true else {
@@ -158,16 +176,25 @@ extension WebSocket {
          default:
           let result = FailedHandshakeResult(statusCode: message.statusCode!,
                                              reason: message.reason ?? "",
-                                             extraHeaders: message.extraHeaders)
+                                             extraHeaders: message.extraHeaders,
+                                             contentType: makeContentType(from: message.contentType),
+                                             content: message.content)
           throw HandshakeError.unexpectedHTTPStatus(result)
       }
     }
 
-    func isAcceptableSubprotocol(_ subprotocol: String?) -> Bool {
+    private func isAcceptableSubprotocol(_ subprotocol: String?) -> Bool {
       if let subprotocol = subprotocol {
         return options.subprotocols.contains(subprotocol)
       }
       return options.subprotocols.isEmpty
+    }
+
+    private func makeContentType(from token: ParameterizedToken?) -> ContentType? {
+      guard let token = token else {
+        return nil
+      }
+      return ContentType(mediaType: token.token, charset: token.get(parameter: "charset"))
     }
   }
 }

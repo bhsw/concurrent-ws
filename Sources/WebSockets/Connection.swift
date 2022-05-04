@@ -1,11 +1,23 @@
 import Foundation
 import Network
 
+/// A TCP/IP connection, with or without TLS.
+///
+/// This internal class exists for two reasons:
+/// * To isolate code that uses older conventions than tasks/async/await to a relatively small part of the library.
+/// * To provide a consistent API on top of different lower level networking libraries.
 class Connection: AsyncSequence {
   enum Event {
+    /// Indicates that a successful connection was made to the other endpoint.
     case connect
-    case receive(Data)
+
+    /// Indicates that data were received from the other endpoint. If `nil`, the other endpoint closed the connection.
+    case receive(Data?)
+
+    /// Indiciates a change in the viability of the connection.
     case viability(Bool)
+
+    /// Indicates a change in the availability of a better network path.
     case betterPathAvailable(Bool)
   }
 
@@ -94,6 +106,7 @@ class Connection: AsyncSequence {
         streamContinuation.yield(.receive(data))
       }
       if (isComplete) {
+        streamContinuation.yield(.receive(nil))
         streamContinuation.finish()
         return
       }

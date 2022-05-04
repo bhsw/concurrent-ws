@@ -21,8 +21,12 @@ internal struct HTTPMessage {
   var webSocketProtocol: [String] = []
   var webSocketVersion: [Int] = []
   var webSocketAccept: String?
-  var webSocketExtensions: [ExtensionSpecifier] = []
+  var webSocketExtensions: [ParameterizedToken] = []
+  var contentLength: Int?
+  var transferEncoding: [ParameterizedToken] = []
+  var contentType: ParameterizedToken?
   var extraHeaders: [String: String] = [:]
+  var content: Data?
 
   init(method: String, target: String, version: String="1.1") {
     self.kind = .request
@@ -63,14 +67,10 @@ internal struct HTTPMessage {
     }
   }
 
-  mutating func addWebSocketExtension(_ specifier: ExtensionSpecifier) {
+  mutating func addWebSocketExtension(_ specifier: ParameterizedToken) {
     if !webSocketExtensions.contains(specifier) {
       webSocketExtensions.append(specifier)
     }
-  }
-
-  mutating func addWebSocketExtension(name: String, parameters: [String: String] = [:]) {
-    addWebSocketExtension(.init(name: name, parameters: parameters))
   }
 
   var headerString: String {
@@ -100,11 +100,16 @@ internal struct HTTPMessage {
       result += "Sec-WebSocket-Accept: \(key)\r\n"
     }
     if !webSocketExtensions.isEmpty {
-      let items = webSocketExtensions.map { ListItem(token: $0.name, parameters: $0.parameters) }
-      result += "Sec-WebSocket-Extensions: " + ListFormatter.format(items: items) + "\r\n"
+      let value = webSocketExtensions.map { $0.format() }.joined(separator: ", ")
+      result += "Sec-WebSocket-Extensions: \(value)\r\n"
+    }
+    if let contentType = contentType {
+      result += "Content-Type: \(contentType.format())\r\n"
     }
     for (name, value) in extraHeaders {
-      result += "\(name): \(value)\r\n"
+      if !isForbiddenHeader(name: name) {
+        result += "\(name): \(value)\r\n"
+      }
     }
     result += "\r\n"
     return result
@@ -145,8 +150,13 @@ private extension HTTPMessage {
       case "sec-websocket-accept":
         webSocketAccept = value
       case "sec-websocket-extensions":
-        webSocketExtensions += ListParser.parse(input: value)
-          .map { ExtensionSpecifier(name: $0.token, parameters: $0.parameters) }
+        webSocketExtensions += ParameterizedToken.parseList(from: value)
+      case "transfer-encoding":
+        transferEncoding += ParameterizedToken.parseList(from: value)
+      case "content-length":
+        contentLength = Int(value)
+      case "content-type":
+        contentType = ParameterizedToken.parse(from: value)
       default:
         if let oldValue = extraHeaders[key] {
           extraHeaders[key] = oldValue + ", " + value
@@ -167,99 +177,209 @@ extension HTTPMessage {
       case invalid
     }
 
+    private enum State {
+      case start
+      case headers
+      case contentWithLength
+      case chunkLength
+      case chunkData
+      case unboundedContent
+      case complete
+      case invalid
+    }
+
+    private var state: State = .start
     private var message: HTTPMessage?
     private var currentLine = Data()
     private var lastHeaderName: String?
     private var lastHeaderValue: String = ""
+    private var remainingLength = 0
 
     init() {
       currentLine.reserveCapacity(128)
     }
 
-    mutating func append(_ data: Data) -> Status {
-      for index in 0..<data.count {
-        let octet = data[index]
-        switch octet {
-          case .cr:
-            // Ignore carriage return.
-            break;
-          case .lf:
-            let status = parseLine(unconsumed: data[(index + 1)...])
-            currentLine.removeAll()
-            if (status != nil) {
-              return status!
+    mutating func append(_ data: Data?) -> Status {
+      guard let data = data else {
+        if state == .unboundedContent {
+          state = .complete
+          return .complete(message!, unconsumed: Data())
+        }
+        return .incomplete
+      }
+      var index = data.startIndex
+      while index != data.endIndex {
+        let c = data[index]
+        switch state {
+          case .start, .headers, .chunkLength:
+            if c == .lf {
+              parseLine()
+              currentLine.removeAll()
+            } else if c != .cr {
+              currentLine.append(c)
             }
-          default:
-            currentLine.append(octet)
+          case .contentWithLength, .chunkData:
+            // TODO: process more than a byte at a time here
+            message!.content!.append(c)
+            remainingLength -= 1
+            if remainingLength == 0 {
+              state = state == .contentWithLength ? .complete : .chunkLength
+            }
+          case .unboundedContent:
+            // TODO: process more than a byte at a time here
+            message!.content!.append(c)
+
+          case .invalid:
+            return .invalid
+
+          case .complete:
+            return .complete(message!, unconsumed: data[index...])
         }
+        index += 1
       }
-      return .incomplete
-    }
-
-    private mutating func parseLine(unconsumed: Data) -> Status?
-    {
-      if currentLine.isEmpty {
-        if message != nil{
-          commitLastHeader()
-          return .complete(message!, unconsumed: unconsumed)
-        }
-        // Tolerate any number of blank lines before the header line.
-        return nil
-      }
-
-      if message == nil {
-        return parseRequestOrStatusLine()
-      }
-
-      if (currentLine[0].isWhitespace) {
-        // Handle deprecated HTTP header folding.
-        guard lastHeaderName != nil else {
+      switch state {
+        case .invalid:
           return .invalid
-        }
-        lastHeaderValue += " " + String(bytes: currentLine.trimmingWhitespace(), encoding: .isoLatin1)!
-        return nil
+        case .complete:
+          return .complete(message!, unconsumed: Data())
+        default:
+          return .incomplete
       }
-
-      commitLastHeader()
-      let fields = currentLine.split(separator: .colon, maxSplits: 1)
-      guard fields.count == 2 else {
-        return .invalid
-      }
-      guard let name = String(bytes: fields[0].trimmingWhitespace(), encoding: .isoLatin1) else {
-        return .invalid
-      }
-      lastHeaderName = name
-      lastHeaderValue = String(bytes: fields[1].trimmingWhitespace(), encoding: .isoLatin1)!
-      return nil
     }
 
-    private mutating func parseRequestOrStatusLine() -> Status? {
+    private mutating func parseLine()
+    {
+      switch state {
+        case .start:
+          if !currentLine.isEmpty {
+            parseRequestOrStatusLine()
+          }
+
+        case .headers:
+          if currentLine.isEmpty {
+            commitLastHeader()
+            headersComplete()
+            return
+          }
+          if (currentLine[0].isWhitespace) {
+            // Handle deprecated HTTP header folding.
+            guard lastHeaderName != nil else {
+              state = .invalid
+              return
+            }
+            lastHeaderValue += " " + String(bytes: currentLine.trimmingWhitespace(), encoding: .isoLatin1)!
+          }
+          commitLastHeader()
+          let fields = currentLine.split(separator: .colon, maxSplits: 1)
+          guard fields.count == 2 else {
+            state = .invalid
+            return
+          }
+          guard let name = String(bytes: fields[0].trimmingWhitespace(), encoding: .isoLatin1) else {
+            state = .invalid
+            return
+          }
+          lastHeaderName = name
+          lastHeaderValue = String(bytes: fields[1].trimmingWhitespace(), encoding: .isoLatin1)!
+
+        case .chunkLength:
+          if currentLine.isEmpty {
+            return
+          }
+          guard let length = Int(String(bytes: currentLine, encoding: .isoLatin1)!, radix: 16) else {
+            state = .invalid
+            return
+          }
+          if length == 0 {
+            state = .complete
+            return
+          }
+          remainingLength = length
+          state = .chunkData
+
+        default:
+          fatalError("Internal error")
+      }
+    }
+
+    private mutating func headersComplete() {
+      if let statusCode = message!.statusCode {
+        if (statusCode >= 100 && statusCode <= 199) || statusCode == 204 || statusCode == 304 {
+          // Per RFC 7230 section 3.3.3, responses with these status codes always end after the final header.
+          state = .complete
+          return
+        }
+      }
+
+      // Handle the case where we received a `Content-Length` header.
+      if let contentLength = message!.contentLength {
+        if contentLength == 0 {
+          state = .complete
+          return
+        }
+        state = .contentWithLength
+        remainingLength = contentLength
+        message!.content = Data(capacity: remainingLength)
+        return
+      }
+
+      // Handle the case where we received a `Transfer-Encoding` header that included `chunked`.
+      if message!.transferEncoding.contains(.init(token: "chunked")) {
+        state = .chunkLength
+        message!.content = Data(capacity: 1024)
+        return
+      }
+
+      // If the message is a request, the absence of one of the above headers indicates no content.
+      if message!.kind == .request {
+        state = .complete
+        return
+      }
+
+      // All that's left is assuming everything is content until the connection is closed.
+      message!.content = Data(capacity: 1024)
+      state = .unboundedContent
+    }
+
+    private mutating func parseRequestOrStatusLine() {
       guard let line = String(bytes: currentLine, encoding: .isoLatin1) else {
-        return .invalid
+        state = .invalid
+        return
       }
       let fields = line.split(separator: " ", maxSplits: 2).map { String($0) }
-      guard fields.count == 2 || fields.count == 3 else {
-        return .invalid
+      guard !fields.isEmpty else {
+        state = .invalid
+        return
       }
-
       if let version = parseHTTPVersion(fields[0]) {
         // It's a response.
+        guard fields.count == 2 || fields.count == 3 else {
+          state = .invalid
+          return
+        }
         guard let statusCode = Int(fields[1]) else {
-          return .invalid
+          state = .invalid
+          return
         }
         let reason = fields.count == 3 ? fields[2].trimmingCharacters(in: .whitespaces) : ""
         message = HTTPMessage(statusCode: statusCode, reason: reason, version: version)
-        return nil
+        state = .headers
+        return
       }
 
       // It's a request
+      guard fields.count == 3 else {
+        state = .invalid
+        return
+      }
       let method = fields[0]
       let target = fields[1]
       guard let version = parseHTTPVersion(fields[2]) else {
-        return .invalid
+        state = .invalid
+        return
       }
       message = HTTPMessage(method: method, target: target, version: version)
-      return nil
+      state = .headers
     }
 
     private func parseHTTPVersion(_ input: String) -> String? {
@@ -280,10 +400,52 @@ extension HTTPMessage {
   }
 }
 
-// MARK: Headers with parameters
+// MARK: ParameterizedToken
 
-extension HTTPMessage {
-  enum TokenFormat {
+struct ParameterizedToken: Equatable {
+  let token: String
+  private var parameters: [String: String] = [:]
+
+  init(token: String) {
+    self.token = token.lowercased()
+  }
+
+  mutating func set(parameter name: String, to value: String) {
+    parameters[name.lowercased()] = value
+  }
+
+  func get(parameter name: String) -> String? {
+    return parameters[name.lowercased()]
+  }
+
+  func format() -> String {
+    var result = ""
+    result.append(token)
+    for (key, value) in parameters {
+      result += ";\(key)="
+      switch TokenFormat.analyze(value) {
+        case .bare:
+          result += value
+        case .quoted:
+          result += "\"" + value + "\""
+        case .quotedAndEscaped:
+          result += "\"" + value.replacingOccurrences(of: "\"", with: "\\\"") + "\""
+      }
+    }
+    return result
+  }
+
+  static func parse(from input: String) -> ParameterizedToken? {
+    var parser = Parser(from: input)
+    return parser.parse()
+  }
+
+  static func parseList(from input: String) -> [ParameterizedToken] {
+    var parser = Parser(from: input)
+    return parser.parseList()
+  }
+
+  private enum TokenFormat {
     case bare
     case quoted
     case quotedAndEscaped
@@ -297,7 +459,7 @@ extension HTTPMessage {
         if (c == "\"") {
           return .quotedAndEscaped
         }
-        if (!c.isToken) {
+        if !c.isToken {
           format = .quoted
         }
       }
@@ -305,69 +467,18 @@ extension HTTPMessage {
     }
   }
 
-  struct ListItem {
-    let token: String
-    let parameters: [String: String]
-  }
-
-  struct ListFormatter {
-    var output: String = ""
-
-    static func format(items: [ListItem]) -> String {
-      var formatter = ListFormatter()
-      for item in items {
-        formatter.append(item: item)
-      }
-      return formatter.output
-    }
-
-    mutating func append(item: ListItem) {
-      guard TokenFormat.analyze(item.token) == .bare else {
-        return
-      }
-      if !output.isEmpty {
-        output += ", "
-      }
-      output.append(item.token)
-      for (name, value) in item.parameters {
-        guard TokenFormat.analyze(name) == .bare else {
-          continue
-        }
-        output += ";" + name
-        append(value: value)
-      }
-    }
-
-    private mutating func append(value: String) {
-      output += "="
-      switch TokenFormat.analyze(value) {
-        case .bare:
-          output += value
-        case .quoted:
-          output += "\"" + value + "\""
-        case .quotedAndEscaped:
-          output += "\"" + value.replacingOccurrences(of: "\"", with: "\\\"") + "\""
-      }
-    }
-  }
-
-  struct ListParser {
+  private struct Parser {
     let input: Data
     var pos = 0
 
-    static func parse(input: String) -> [ListItem] {
-      var parser = ListParser(from: input.data(using: .utf8)!)
-      return parser.parse()
+    init(from input: String) {
+      self.input = input.data(using: .utf8)!
     }
 
-    init(from data: Data) {
-      self.input = data
-    }
-
-    mutating func parse() -> [ListItem] {
-      var items: [ListItem] = []
+    mutating func parseList() -> [ParameterizedToken] {
+      var items: [ParameterizedToken] = []
       repeat {
-        guard let item = next() else {
+        guard let item = parse() else {
           break
         }
         items.append(item)
@@ -375,28 +486,28 @@ extension HTTPMessage {
       return items
     }
 
-    mutating func next() -> ListItem? {
+    mutating func parse() -> ParameterizedToken? {
       guard let token = nextToken() else {
         return nil
       }
-      var params: [String: String] = [:]
+      var result = ParameterizedToken(token: token)
       while maybe(.semicolon) {
         guard let name = nextToken() else {
           break
         }
         if maybe(.eq), let value = nextToken() ?? quotedText() {
-          params[name] = value
+          result.set(parameter: name, to: value)
         } else {
-          params[name] = ""
+          result.set(parameter: name, to: "")
         }
       }
-      return .init(token: token, parameters: params)
+      return result
     }
 
     private mutating func nextToken() -> String? {
       skipWhitespace()
       let start = pos
-      while pos != input.count && input[pos].isToken {
+      while pos != input.count && (input[pos] == .slash || input[pos].isToken) {
         pos += 1
       }
       guard start != pos else {
@@ -492,18 +603,6 @@ extension ProtocolIdentifier : Equatable {
   }
 }
 
-// MARK: ExtensionIdentifier
-
-internal struct ExtensionSpecifier: Equatable {
-  let name: String
-  let parameters: [String: String]
-
-  init(name: String, parameters: [String: String]) {
-    self.name = name
-    self.parameters = parameters
-  }
-}
-
 // MARK: Private Data extension
 
 fileprivate extension Data {
@@ -563,4 +662,14 @@ fileprivate extension Character {
   var isToken: Bool {
     self.asciiValue?.isToken ?? false
   }
+}
+
+fileprivate func isForbiddenHeader(name: String) -> Bool {
+  let key = name.lowercased()
+  if key.starts(with: "sec-") || key.starts(with: "proxy-") {
+    return true
+  }
+  return key == "connection" || key == "content-length" || key == "expect" || key == "host" ||
+         key == "keep-alive" || key == "te" || key == "trailer" || key == "transfer-encoding" ||
+         key == "upgrade"
 }

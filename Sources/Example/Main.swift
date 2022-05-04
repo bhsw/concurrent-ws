@@ -12,11 +12,12 @@ struct App {
   }
 
   static func testClient() async throws {
-//    let url = URL(string: "ws://europa.ocsoft.net:8080/test")!
+//    let url = URL(string: "ws://europa.ocsoft.net:8080/testx")!
 //    let url = URL(string: "ws://light.ocsoft.net/api/logs")!
-//    let url = URL(string: "wss://m.ocsoft.com/api/logs")!
-    let url = URL(string: "wss://echo.websocket.events")!
+    let url = URL(string: "wss://m.ocsoft.com/api/logs")!
+//    let url = URL(string: "wss://echo.websocket.events")!
 //    let url = URL(string: "wss://blob.ocsoft.com/redirect-test")!
+//    let url = URL(string: "wss://github.com")!
     var options = WebSocket.Options()
     options.closeAcknowledgementTimeout = 3
     options.connectTimeout = 5
@@ -30,6 +31,14 @@ struct App {
     do {
       for try await event in sock {
         print("EVENT:", event)
+      }
+    } catch WebSocket.HandshakeError.unexpectedHTTPStatus(let result) {
+      print("STATUS:", result.statusCode)
+      if let contentType = result.contentType {
+        print("CONTENT-TYPE:", contentType)
+        if contentType.mediaType.starts(with: "text/"), let content = result.content {
+          print("CONTENT:", String(data: content, encoding: .utf8)!)
+        }
       }
     } catch {
       print("ERROR: \(error)")
