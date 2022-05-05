@@ -5,7 +5,10 @@ fileprivate let supportedWebSocketVersion = 13
 fileprivate let protocolUUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 fileprivate let websocketProtocol = ProtocolIdentifier("websocket")
 
+typealias HandshakeResult = WebSocket.HandshakeResult
+typealias FailedHandshakeResult = WebSocket.FailedHandshakeResult
 typealias HandshakeError = WebSocket.HandshakeError
+typealias ContentType = WebSocket.ContentType
 
 extension WebSocket {
   /// The result of a successful WebSocket opening handshake.
@@ -125,10 +128,6 @@ internal final class ClientHandshake {
     case redirect(String)
   }
 
-  typealias HandshakeResult = WebSocket.HandshakeResult
-  typealias FailedHandshakeResult = WebSocket.FailedHandshakeResult
-  typealias ContentType = WebSocket.ContentType
-
   private var options: WebSocket.Options
   private var expectedKey: String? = nil
   private var parser = HTTPMessage.Parser()
@@ -217,10 +216,13 @@ internal final class ClientHandshake {
 
 // MARK: Server handshake
 
-internal func serverHandshake(request: HTTPMessage, subprotocol: String?,
-                              extraHeaders: [String: String] = [:]) -> HTTPMessage {
+internal func makeServerHandshakeResponse(to request: HTTPMessage, subprotocol: String?,
+                                          extraHeaders: [String: String] = [:]) -> HTTPMessage {
+  guard request.version >= .v1_1 else {
+    return failedUpgrade(text: "A WebSocket upgrade requires HTTP version 1.1 or greater")
+  }
   guard request.method == .get else {
-    return failedUpgrade(text: "Expected a GET request")
+    return failedUpgrade(text: "A WebSocket upgrade requires a GET request")
   }
   guard request.upgrade.contains(websocketProtocol) else {
     return failedUpgrade(text: "Expected a WebSocket upgrade request")
@@ -228,20 +230,22 @@ internal func serverHandshake(request: HTTPMessage, subprotocol: String?,
   guard request.connection.contains(where: { $0.lowercased() == "upgrade" }) == true else {
     return failedUpgrade(text: "Invalid connection header for WebSocket upgrade")
   }
-  // TODO: the HTTP version must be at least 1.1
-  // TODO: there must be a valid host header, apparently
-  // TODO: the websocket version must be 13
-  // TODO: the websocket key when Base64 decoded must be 16 bytes
+  guard request.webSocketVersion == [ supportedWebSocketVersion] else {
+    return failedUpgrade(text: "Expected WebSocket version \(supportedWebSocketVersion)")
+  }
+  guard let clientKey = request.webSocketKey else {
+    return failedUpgrade(text: "Expected a Sec-WebSocket-Key header")
+  }
 
-  // TODO: response must include
-  // - Status 101
-  // - Upgrade: websocket
-  // - Connection: upgrade
-  // - Sec-WebSocket-Accept: calculated per the rfc
-  // - Optional Sec-WebSocket-Protocol:
-  // - Any extra headers that were passed in
-
-  fatalError("TODO")
+  var response = HTTPMessage(status: .switchingProtocols)
+  response.addUpgrade(websocketProtocol)
+  response.addWebSocketVersion(supportedWebSocketVersion)
+  response.webSocketAccept = sha1(clientKey + protocolUUID)
+  if let subprotocol = subprotocol {
+    response.addWebSocketProtocol(subprotocol)
+  }
+  response.extraHeaders = extraHeaders
+  return response
 }
 
 private func failedUpgrade(status: HTTPStatus = .badRequest, text: String) -> HTTPMessage {

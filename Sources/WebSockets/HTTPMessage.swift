@@ -8,7 +8,7 @@ internal struct HTTPMessage {
   }
 
   let kind : Kind
-  var version: String
+  var version: HTTPVersion
   var method: HTTPMethod?
   var target: String?
   var status: HTTPStatus?
@@ -28,18 +28,18 @@ internal struct HTTPMessage {
   var extraHeaders: [String: String] = [:]
   var content: Data?
 
-  init(method: HTTPMethod, target: String, version: String="1.1") {
+  init(method: HTTPMethod, target: String, version: HTTPVersion = .v1_1) {
     self.kind = .request
     self.version = version
     self.method = method
     self.target = target
   }
 
-  init(status: HTTPStatus, reason: String, version: String="1.1") {
+  init(status: HTTPStatus, reason: String? = nil, version: HTTPVersion = .v1_1) {
     self.kind = .response
     self.version = version
     self.status = status
-    self.reason = reason
+    self.reason = reason ?? status.description
   }
 
   mutating func addUpgrade(_ option: ProtocolIdentifier) {
@@ -136,9 +136,9 @@ private extension HTTPMessage {
   var firstLine: String {
     switch kind {
       case .request:
-        return method!.rawValue + " " + target! + " HTTP/" + version
+        return method!.rawValue + " " + target! + " HTTP/" + version.description
       case .response:
-        return "HTTP/" + version + " " + String(status!.rawValue) + " " + reason!
+        return "HTTP/" + version.description + " " + String(status!.rawValue) + " " + reason!
     }
   }
 
@@ -391,7 +391,7 @@ extension HTTPMessage {
       state = .headers
     }
 
-    private func parseHTTPVersion(_ input: String) -> String? {
+    private func parseHTTPVersion(_ input: String) -> HTTPVersion? {
       let proto = ProtocolIdentifier(input)
       guard proto.name == "HTTP" else {
         return nil
@@ -576,7 +576,7 @@ struct ParameterizedToken: Equatable {
 
 internal struct ProtocolIdentifier: LosslessStringConvertible {
   let name: String
-  let version: String?
+  let version: HTTPVersion?
 
   var description: String {
     if let version = version {
@@ -585,7 +585,7 @@ internal struct ProtocolIdentifier: LosslessStringConvertible {
     return name;
   }
 
-  init(name: String, version: String? = nil) {
+  init(name: String, version: HTTPVersion? = nil) {
     self.name = name
     self.version = version
   }
@@ -598,7 +598,7 @@ internal struct ProtocolIdentifier: LosslessStringConvertible {
       version = nil
     } else {
       name = fields[0]
-      version = fields[1]
+      version = HTTPVersion(from: fields[1])
     }
   }
 }
@@ -609,6 +609,40 @@ extension ProtocolIdentifier : Equatable {
       return false
     }
     return lhs.version == rhs.version
+  }
+}
+
+// MARK: HTTPVersion
+
+struct HTTPVersion: Equatable, Comparable {
+  let major: Int
+  let minor: Int
+
+  static let v1_1 = HTTPVersion(major: 1, minor: 1)
+
+  init(major: Int, minor: Int) {
+    self.major = major
+    self.minor = minor
+  }
+
+  init?(from str: String) {
+    let fields = str.split(separator: ".")
+    guard fields.count == 2, let major = Int(fields[0]), let minor = Int(fields[1]) else {
+      return nil
+    }
+    self.major = major
+    self.minor = minor
+  }
+
+  var description: String {
+    return "\(major).\(minor)"
+  }
+
+  static func < (lhs: HTTPVersion, rhs: HTTPVersion) -> Bool {
+    if lhs.major == rhs.major {
+      return lhs.minor < rhs.minor
+    }
+    return lhs.major < rhs.major
   }
 }
 

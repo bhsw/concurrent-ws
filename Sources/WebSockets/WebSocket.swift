@@ -119,6 +119,7 @@ public actor WebSocket {
   private var redirectCount = 0
   private var handshakeTimerTask: Task<Void, Never>?
   private var openingHandshakeDidExpire = false
+  private var handshakeResult: HandshakeResult?
 
   /// Initializes a new `WebSocket` instance.
   ///
@@ -126,8 +127,18 @@ public actor WebSocket {
   public init(url: URL, options: Options = .init()) {
     self.url = url
     self.options = options
-    self.outputFramer = OutputFramer(forClient: true)
-    self.inputFramer = InputFramer(forClient: true, maximumMessageSize: options.maximumIncomingMessageSize)
+    outputFramer = OutputFramer(forClient: true)
+    inputFramer = InputFramer(forClient: true, maximumMessageSize: options.maximumIncomingMessageSize)
+  }
+
+  init(url: URL, connection: Connection, handshakeResult: HandshakeResult, options: Options) {
+    self.url = url
+    self.options = options
+    self.handshakeResult = handshakeResult
+    outputFramer = OutputFramer(forClient: false)
+    inputFramer = InputFramer(forClient: false, maximumMessageSize: options.maximumIncomingMessageSize)
+    // TODO connection.reconfigure()
+    readyState = .connecting
   }
 
   /// Sends a textual message to the other endpoint.
@@ -267,7 +278,9 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
       case .initialized:
         return try await connect()
       case .connecting:
-        fatalError("Internal error")
+        // We should only ever get here for server-side WebSockets.
+        precondition(handshakeResult != nil)
+        return .open(handshakeResult!)
       case .open, .closing:
         return await nextEvent()
       case .closed:
@@ -343,6 +356,7 @@ private extension WebSocket {
               case .incomplete:
                 continue
               case .ready(result: let result, unconsumed: let unconsumed):
+                handshakeResult = result
                 cancelHandshakeTimer()
                 inputFramer.push(unconsumed)
                 readyState = .open

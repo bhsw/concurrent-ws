@@ -97,7 +97,7 @@ extension WebSocketServer {
 
     private let connection: Connection
     private var state: State = .initialized
-    private var request: Request?
+    private var request: HTTPMessage?
     private var unconsumed: Data?
 
     init(from connection: Connection) {
@@ -129,15 +129,15 @@ extension WebSocketServer {
                   guard message.kind == .request else {
                     throw WebSocket.HandshakeError.invalidHTTPRequest
                   }
+                  self.request = message
                   self.unconsumed = unconsumed
-                  self.request = Request(method: message.method!, target: message.target!,
-                                         host: message.host, extraHeaders: message.extraHeaders,
-                                         contentType: WebSocket.ContentType(from: message.contentType),
-                                         content: message.content,
-                                         upgradeRequested: message.upgrade.contains(.init("websocket")),
-                                         subprotocols: message.webSocketProtocol)
                   state = .pendingResponse
-                  return self.request!
+                  return Request(method: message.method!, target: message.target!,
+                                 host: message.host, extraHeaders: message.extraHeaders,
+                                 contentType: WebSocket.ContentType(from: message.contentType),
+                                 content: message.content,
+                                 upgradeRequested: message.upgrade.contains(.init("websocket")),
+                                 subprotocols: message.webSocketProtocol)
               }
             default:
               break
@@ -174,15 +174,31 @@ extension WebSocketServer {
       guard let data = message.encode() else {
         throw WebSocket.HandshakeError.invalidHTTPResponse
       }
-      defer {
-        connection.close()
-        state = .done
-      }
       await connection.send(data: data)
+      connection.close()
+      state = .done
     }
 
-    public func upgrade() async throws -> WebSocket {
-      fatalError("Not implemented")
+    public func upgrade(subprotocol: String? = nil,
+                        extraHeaders: [String: String] = [:],
+                        options: WebSocket.Options = WebSocket.Options()) async throws -> WebSocket {
+      guard state == .pendingResponse else {
+        fatalError("Attempt to send more than one response to an HTTP request")
+      }
+      state = .sendingResponse
+      let response = makeServerHandshakeResponse(to: request!, subprotocol: subprotocol, extraHeaders: extraHeaders)
+      guard let data = response.encode() else {
+        throw HandshakeError.invalidHTTPResponse
+      }
+      await connection.send(data: data)
+      state = .done
+      guard !response.status!.isError else {
+        connection.close()
+        throw HandshakeError.upgradeRejected
+      }
+      let handshakeResult = HandshakeResult(subprotocol: subprotocol, extraHeaders: extraHeaders)
+      // TODO: handle URL better here
+      return .init(url: URL(string: request!.target!)!, connection: connection, handshakeResult: handshakeResult, options: options)
     }
 
     public func respond(withStatus status: WebSocket.HTTPStatus,
