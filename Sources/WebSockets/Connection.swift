@@ -21,17 +21,22 @@ class Connection: AsyncSequence {
     case betterPathAvailable(Bool)
   }
 
+  struct Options {
+    var receiveChunkSize = 65536
+    var enableFastOpen = true
+  }
+
   typealias StreamType = AsyncThrowingStream<Event, Error>
   typealias AsyncIterator = StreamType.Iterator
   typealias Element = Event
 
   private let dispatchQueue: DispatchQueue
-  private let receiveChunkSize: Int
+  private var receiveChunkSize: Int
   private var stream: StreamType!
   private var continuation: StreamType.Continuation!
   private var connection: NWConnection
 
-  init(with connection: NWConnection, options: WebSocket.Options) {
+  init(with connection: NWConnection, options: Options = Options()) {
     let endpoint = connection.endpoint
     dispatchQueue = DispatchQueue(label: "WebSocket \(endpoint)")
     receiveChunkSize = options.receiveChunkSize
@@ -55,11 +60,7 @@ class Connection: AsyncSequence {
     }
   }
 
-  deinit {
-    print("* connection deinit")
-  }
-
-  convenience init(host: String, port: UInt16, tls: Bool, options: WebSocket.Options) {
+  convenience init(host: String, port: UInt16, tls: Bool, options: Options = Options()) {
     let tcp = NWProtocolTCP.Options()
     tcp.enableFastOpen = options.enableFastOpen
 
@@ -69,6 +70,10 @@ class Connection: AsyncSequence {
 
     let connection = NWConnection(host: .init(host), port: .init(rawValue: UInt16(port))!, using: params)
     self.init(with: connection, options: options)
+  }
+
+  deinit {
+    print("* connection deinit")
   }
 
   @discardableResult
@@ -93,6 +98,12 @@ class Connection: AsyncSequence {
 
   func makeAsyncIterator() -> AsyncIterator {
     return stream.makeAsyncIterator()
+  }
+
+  func reconfigure(options: Options) {
+    dispatchQueue.async { [weak self] in
+      self?.receiveChunkSize = options.receiveChunkSize
+    }
   }
 
   private func connectionStateChanged(to state: NWConnection.State) {

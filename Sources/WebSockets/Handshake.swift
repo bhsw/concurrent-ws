@@ -3,6 +3,9 @@ import CryptoKit
 
 fileprivate let supportedWebSocketVersion = 13
 fileprivate let protocolUUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+fileprivate let websocketProtocol = ProtocolIdentifier("websocket")
+
+typealias HandshakeError = WebSocket.HandshakeError
 
 extension WebSocket {
   /// The result of a successful WebSocket opening handshake.
@@ -17,7 +20,7 @@ extension WebSocket {
   /// The result of a failed WebSocket opening handshake.
   public struct FailedHandshakeResult {
     /// The HTTP status code.
-    public let statusCode: Int
+    public let status: HTTPStatus
 
     /// The HTTP reason string.
     public let reason: String
@@ -39,6 +42,19 @@ extension WebSocket {
 
     /// The character set (e.g. `UTF-8`) used if the content is text.
     public let charset: String?
+
+    /// Initializes a `ContentType`.
+    public init(mediaType: String, charset: String? = nil) {
+      self.mediaType = mediaType
+      self.charset = charset
+    }
+    init?(from token: ParameterizedToken?) {
+      guard let token = token else {
+        return nil
+      }
+      mediaType = token.token
+      charset = token.get(parameter: "charset")
+    }
   }
 
   /// A type of error that may be thrown during the `connecting` state of the socket.
@@ -99,108 +115,144 @@ extension WebSocket {
   }
 }
 
-extension WebSocket {
-  /// A WebSocket opening handshake state machine
-  internal final class Handshake {
-    enum Status {
-      case incomplete
-      case ready(result: HandshakeResult, unconsumed: Data)
-      case redirect(String)
+// MARK: ClientHandshake
+
+/// A WebSocket opening handshake state machine
+internal final class ClientHandshake {
+  enum Status {
+    case incomplete
+    case ready(result: HandshakeResult, unconsumed: Data)
+    case redirect(String)
+  }
+
+  typealias HandshakeResult = WebSocket.HandshakeResult
+  typealias FailedHandshakeResult = WebSocket.FailedHandshakeResult
+  typealias ContentType = WebSocket.ContentType
+
+  private var options: WebSocket.Options
+  private var expectedKey: String? = nil
+  private var parser = HTTPMessage.Parser()
+
+  init(options: WebSocket.Options) {
+    self.options = options
+  }
+
+  func makeRequest(url: URL) throws -> Data {
+    let key = generateKey()
+    expectedKey = sha1(key + protocolUUID)
+
+    var request = HTTPMessage(method: .get, target: url.resourceName)
+    request.host = url.hostAndPort
+    request.addUpgrade(websocketProtocol)
+    request.webSocketKey = key
+    if !options.subprotocols.isEmpty {
+      request.webSocketProtocol = options.subprotocols
     }
-
-    private typealias HandshakeError = WebSocket.HandshakeError
-    private var options: WebSocket.Options
-    private var expectedKey: String? = nil
-    private var parser = HTTPMessage.Parser()
-
-    init(options: WebSocket.Options) {
-      self.options = options
+    request.addWebSocketVersion(supportedWebSocketVersion)
+    request.extraHeaders = options.extraHeaders
+    guard let encoded = request.encode() else {
+      throw HandshakeError.invalidHTTPRequest
     }
+    return encoded
+  }
 
-    func makeRequest(url: URL) throws -> Data {
-      let key = generateKey()
-      expectedKey = sha1(key + protocolUUID)
-
-      var request = HTTPMessage(method: "GET", target: url.resourceName)
-      request.host = url.hostAndPort
-      request.addUpgrade(ProtocolIdentifier(name: "websocket"))
-      request.webSocketKey = key
-      if !options.subprotocols.isEmpty {
-        request.webSocketProtocol = options.subprotocols
-      }
-      request.addWebSocketVersion(supportedWebSocketVersion)
-      request.extraHeaders = options.extraHeaders
-      guard let encoded = request.encode() else {
-        throw HandshakeError.invalidHTTPRequest
-      }
-      return encoded
-    }
-
-    func receive(data: Data?) throws -> Status {
-      switch parser.append(data) {
-        case .incomplete:
-          return .incomplete
-        case .complete(let message, unconsumed: let data):
-          return try handleResponse(message, unconsumed: data)
-        case .invalid:
-          throw HandshakeError.invalidHTTPResponse
-      }
-    }
-
-    private func handleResponse(_ message: HTTPMessage, unconsumed: Data) throws -> Status {
-      switch message.statusCode! {
-        case 101:
-          guard message.upgrade.contains(.init(name: "websocket")) == true else {
-            throw HandshakeError.upgradeRejected
-          }
-          guard message.connection.contains(where: { $0.lowercased() == "upgrade" }) == true else {
-            throw HandshakeError.invalidConnectionHeader
-          }
-          guard message.webSocketAccept == expectedKey else {
-            throw HandshakeError.keyMismatch
-          }
-          let subprotocol = message.webSocketProtocol.first
-          guard isAcceptableSubprotocol(subprotocol) else {
-            throw HandshakeError.subprotocolMismatch
-          }
-          // We don't currently support any extensions, so ensure that the server is not specifying any.
-          // (That would be a violation of the handshake protocol, as the server is required to select only
-          // from extensions offered in the client's request.)
-          guard message.webSocketExtensions.isEmpty else {
-            throw HandshakeError.extensionMismatch
-          }
-          let result = HandshakeResult(subprotocol: subprotocol, extraHeaders: message.extraHeaders)
-          return .ready(result: result, unconsumed: unconsumed)
-        case 300...399:
-          guard let location = message.location else {
-            throw HandshakeError.invalidRedirection
-          }
-          return .redirect(location)
-         default:
-          let result = FailedHandshakeResult(statusCode: message.statusCode!,
-                                             reason: message.reason ?? "",
-                                             extraHeaders: message.extraHeaders,
-                                             contentType: makeContentType(from: message.contentType),
-                                             content: message.content)
-          throw HandshakeError.unexpectedHTTPStatus(result)
-      }
-    }
-
-    private func isAcceptableSubprotocol(_ subprotocol: String?) -> Bool {
-      if let subprotocol = subprotocol {
-        return options.subprotocols.contains(subprotocol)
-      }
-      return options.subprotocols.isEmpty
-    }
-
-    private func makeContentType(from token: ParameterizedToken?) -> ContentType? {
-      guard let token = token else {
-        return nil
-      }
-      return ContentType(mediaType: token.token, charset: token.get(parameter: "charset"))
+  func receive(data: Data?) throws -> Status {
+    switch parser.append(data) {
+      case .incomplete:
+        return .incomplete
+      case .complete(let message, unconsumed: let data):
+        return try handleResponse(message, unconsumed: data)
+      case .invalid:
+        throw HandshakeError.invalidHTTPResponse
     }
   }
+
+  private func handleResponse(_ message: HTTPMessage, unconsumed: Data) throws -> Status {
+    if message.status!  == .switchingProtocols {
+      guard message.upgrade.contains(websocketProtocol) == true else {
+        throw HandshakeError.upgradeRejected
+      }
+      guard message.connection.contains(where: { $0.lowercased() == "upgrade" }) == true else {
+        throw HandshakeError.invalidConnectionHeader
+      }
+      guard message.webSocketAccept == expectedKey else {
+        throw HandshakeError.keyMismatch
+      }
+      let subprotocol = message.webSocketProtocol.first
+      guard isAcceptableSubprotocol(subprotocol) else {
+        throw HandshakeError.subprotocolMismatch
+      }
+      // We don't currently support any extensions, so ensure that the server is not specifying any.
+      // (That would be a violation of the handshake protocol, as the server is required to select only
+      // from extensions offered in the client's request.)
+      guard message.webSocketExtensions.isEmpty else {
+        throw HandshakeError.extensionMismatch
+      }
+      let result = HandshakeResult(subprotocol: subprotocol, extraHeaders: message.extraHeaders)
+      return .ready(result: result, unconsumed: unconsumed)
+    }
+
+    if message.status!.kind == .redirection {
+      guard let location = message.location else {
+        throw HandshakeError.invalidRedirection
+      }
+      return .redirect(location)
+    }
+
+    let result = FailedHandshakeResult(status: message.status!,
+                                       reason: message.reason ?? "",
+                                       extraHeaders: message.extraHeaders,
+                                       contentType: ContentType(from: message.contentType),
+                                       content: message.content)
+    throw HandshakeError.unexpectedHTTPStatus(result)
+  }
+
+  private func isAcceptableSubprotocol(_ subprotocol: String?) -> Bool {
+    if let subprotocol = subprotocol {
+      return options.subprotocols.contains(subprotocol)
+    }
+    return options.subprotocols.isEmpty
+  }
 }
+
+// MARK: Server handshake
+
+internal func serverHandshake(request: HTTPMessage, subprotocol: String?,
+                              extraHeaders: [String: String] = [:]) -> HTTPMessage {
+  guard request.method == .get else {
+    return failedUpgrade(text: "Expected a GET request")
+  }
+  guard request.upgrade.contains(websocketProtocol) else {
+    return failedUpgrade(text: "Expected a WebSocket upgrade request")
+  }
+  guard request.connection.contains(where: { $0.lowercased() == "upgrade" }) == true else {
+    return failedUpgrade(text: "Invalid connection header for WebSocket upgrade")
+  }
+  // TODO: the HTTP version must be at least 1.1
+  // TODO: there must be a valid host header, apparently
+  // TODO: the websocket version must be 13
+  // TODO: the websocket key when Base64 decoded must be 16 bytes
+
+  // TODO: response must include
+  // - Status 101
+  // - Upgrade: websocket
+  // - Connection: upgrade
+  // - Sec-WebSocket-Accept: calculated per the rfc
+  // - Optional Sec-WebSocket-Protocol:
+  // - Any extra headers that were passed in
+
+  fatalError("TODO")
+}
+
+private func failedUpgrade(status: HTTPStatus = .badRequest, text: String) -> HTTPMessage {
+  var message = HTTPMessage(status: status, reason: status.description)
+  message.contentType = .init(token: "text/plain")
+  message.contentType!.set(parameter: "charset", to: "utf-8")
+  message.content = text.data(using: .utf8)
+  return message
+}
+
+// MARK: Key utilities
 
 fileprivate func generateKey() -> String {
   var nonce = Data(count: 16)
@@ -217,6 +269,8 @@ fileprivate func sha1(_ input: String) -> String? {
   let digest = Insecure.SHA1.hash(data: data)
   return Data(Array(digest.makeIterator())).base64EncodedString()
 }
+
+// MARK: Private URL extension
 
 fileprivate extension URL {
   var hostAndPort: String? {

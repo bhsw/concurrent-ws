@@ -1,5 +1,5 @@
 import Foundation
-@testable import WebSockets
+import WebSockets
 
 @main
 struct App {
@@ -15,9 +15,9 @@ struct App {
   static func testClient() async throws {
 //    let url = URL(string: "ws://europa.ocsoft.net:8080/testx")!
 //    let url = URL(string: "ws://light.ocsoft.net/api/logs")!
-    let url = URL(string: "wss://m.ocsoft.com/api/logs")!
+//    let url = URL(string: "wss://m.ocsoft.com/api/logs")!
 //    let url = URL(string: "wss://echo.websocket.events")!
-//    let url = URL(string: "wss://blob.ocsoft.com/redirect-test")!
+    let url = URL(string: "wss://blob.ocsoft.com/redirect-test")!
 //    let url = URL(string: "wss://github.com")!
     var options = WebSocket.Options()
     options.closingHandshakeTimeout = 3
@@ -34,7 +34,7 @@ struct App {
         print("EVENT:", event)
       }
     } catch WebSocket.HandshakeError.unexpectedHTTPStatus(let result) {
-      print("STATUS:", result.statusCode)
+      print("STATUS:", result.status)
       if let contentType = result.contentType {
         print("CONTENT-TYPE:", contentType)
         if contentType.mediaType.starts(with: "text/"), let content = result.content {
@@ -49,34 +49,32 @@ struct App {
   }
 
   static func testServer() async throws {
-    let options = WebSocket.Options()
-    let listener = Listener(port: 80, tls: false, options: options)
+    let server = WebSocketServer(port: 80)
     Task {
       try await Task.sleep(nanoseconds: 100_000_000_000)
-      listener.stop()
+//      listener.stop()
     }
-    for try await event in listener {
+    for try await event in server {
       switch event {
         case .ready:
-          print("* Listener ready")
+          print("* Server ready")
         case .networkUnavailable:
-          print("* Listener reports network unavailable")
-        case .connection(let connection):
+          print("* Server reports network unavailable")
+        case .client(let client):
           Task {
-            print("* Got a client")
-            for try await event in connection {
-              switch event {
-                case .connect:
-                  print("* Client connect event")
-                case .receive(let data):
-                  if let data = data {
-                    print("RECEIVE:", data)
-                  } else {
-                    print("END")
-                  }
-                default:
-                  break
+            do {
+              let req = try await client.request()
+              print(req)
+              if req.method != .get {
+                try await client.badRequest()
+              } else if req.target == "/portal" {
+                try await client.redirect(to: "http://ocsoft.net")
+              } else {
+                try await client.notFound()
               }
+              print("Response sent OK")
+            } catch {
+              print("Client error:", error)
             }
           }
       }

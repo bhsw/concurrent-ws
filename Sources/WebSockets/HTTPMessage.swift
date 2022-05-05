@@ -9,9 +9,9 @@ internal struct HTTPMessage {
 
   let kind : Kind
   var version: String
-  var method: String?
+  var method: HTTPMethod?
   var target: String?
-  var statusCode: Int?
+  var status: HTTPStatus?
   var reason: String?
   var host: String?
   var location: String?
@@ -28,17 +28,17 @@ internal struct HTTPMessage {
   var extraHeaders: [String: String] = [:]
   var content: Data?
 
-  init(method: String, target: String, version: String="1.1") {
+  init(method: HTTPMethod, target: String, version: String="1.1") {
     self.kind = .request
     self.version = version
     self.method = method
     self.target = target
   }
 
-  init(statusCode: Int, reason: String, version: String="1.1") {
+  init(status: HTTPStatus, reason: String, version: String="1.1") {
     self.kind = .response
     self.version = version
-    self.statusCode = statusCode
+    self.status = status
     self.reason = reason
   }
 
@@ -103,6 +103,9 @@ internal struct HTTPMessage {
       let value = webSocketExtensions.map { $0.format() }.joined(separator: ", ")
       result += "Sec-WebSocket-Extensions: \(value)\r\n"
     }
+    if let contentLength = contentLength {
+      result += "Content-Length: \(contentLength)\r\n"
+    }
     if let contentType = contentType {
       result += "Content-Type: \(contentType.format())\r\n"
     }
@@ -116,7 +119,14 @@ internal struct HTTPMessage {
   }
 
   func encode() -> Data? {
-    return headerString.data(using: .isoLatin1)
+    print(headerString)
+    guard var data = headerString.data(using: .isoLatin1) else {
+      return nil
+    }
+    if let content = content {
+      data += content
+    }
+    return data
   }
 }
 
@@ -126,9 +136,9 @@ private extension HTTPMessage {
   var firstLine: String {
     switch kind {
       case .request:
-        return method! + " " + target! + " HTTP/" + version
+        return method!.rawValue + " " + target! + " HTTP/" + version
       case .response:
-        return "HTTP/" + version + " " + String(statusCode!) + " " + reason!
+        return "HTTP/" + version + " " + String(status!.rawValue) + " " + reason!
     }
   }
 
@@ -303,9 +313,8 @@ extension HTTPMessage {
     }
 
     private mutating func headersComplete() {
-      if let statusCode = message!.statusCode {
-        if (statusCode >= 100 && statusCode <= 199) || statusCode == 204 || statusCode == 304 {
-          // Per RFC 7230 section 3.3.3, responses with these status codes always end after the final header.
+      if let status = message!.status {
+        if !status.allowsContent {
           state = .complete
           return
         }
@@ -362,7 +371,7 @@ extension HTTPMessage {
           return
         }
         let reason = fields.count == 3 ? fields[2].trimmingCharacters(in: .whitespaces) : ""
-        message = HTTPMessage(statusCode: statusCode, reason: reason, version: version)
+        message = HTTPMessage(status: .init(rawValue: statusCode), reason: reason, version: version)
         state = .headers
         return
       }
@@ -378,7 +387,7 @@ extension HTTPMessage {
         state = .invalid
         return
       }
-      message = HTTPMessage(method: method, target: target, version: version)
+      message = HTTPMessage(method: .init(rawValue: method), target: target, version: version)
       state = .headers
     }
 
@@ -410,7 +419,7 @@ struct ParameterizedToken: Equatable {
     self.token = token.lowercased()
   }
 
-  mutating func set(parameter name: String, to value: String) {
+  mutating func set(parameter name: String, to value: String?) {
     parameters[name.lowercased()] = value
   }
 

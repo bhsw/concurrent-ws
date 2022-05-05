@@ -329,8 +329,10 @@ private extension WebSocket {
 
     let useTLS = scheme == "wss"
     let port = UInt16(url.port ?? (useTLS ? 443 : 80))
-    connection = Connection(host: host, port: port, tls: useTLS, options: options)
-    let handshake = Handshake(options: options)
+    let connectionOptions = Connection.Options(receiveChunkSize: options.receiveChunkSize,
+                                               enableFastOpen: options.enableFastOpen)
+    connection = Connection(host: host, port: port, tls: useTLS, options: connectionOptions)
+    let handshake = ClientHandshake(options: options)
     do {
       for try await event in connection! {
         switch event {

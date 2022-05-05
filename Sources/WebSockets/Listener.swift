@@ -17,29 +17,28 @@ class Listener: AsyncSequence {
   private var continuation: StreamType.Continuation!
   private var listener: NWListener?
 
-  // TODO: maybe this doesn't get WebSocket.Options?
-  init(port: UInt16, tls: Bool, options: WebSocket.Options) {
+  init(port: UInt16, connectionOptions: Connection.Options = .init()) {
     dispatchQueue = DispatchQueue(label: "WebSocket listener on port \(port)")
     stream = AsyncThrowingStream { continuation in
       self.continuation = continuation
     }
 
-    let params = NWParameters(tls: tls ? NWProtocolTLS.Options() : nil, tcp: NWProtocolTCP.Options())
+    let params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
     params.allowLocalEndpointReuse = true
     params.includePeerToPeer = true
 
     do {
       listener = try NWListener(using: params, on: .init(rawValue: port)!)
       listener!.newConnectionHandler = { [weak self] connection in
-        self?.continuation.yield(.connection(Connection(with: connection, options: options)))
+        self?.continuation.yield(.connection(Connection(with: connection, options: connectionOptions)))
       }
       listener!.stateUpdateHandler = { [weak self] state in
         self?.stateChanged(to: state)
       }
       listener!.start(queue: dispatchQueue)
     } catch {
-      continuation.finish(throwing: WebSocket.ServerError.listenerFailed(reason: error.localizedDescription,
-                                                                         underlyingError: error))
+      continuation.finish(throwing: ListenerError.failed(reason: error.localizedDescription,
+                                                        underlyingError: error))
     }
   }
 
@@ -63,10 +62,14 @@ class Listener: AsyncSequence {
       case .waiting(_):
         continuation.yield(.networkUnavailable)
       case .failed(let error):
-        continuation.finish(throwing: WebSocket.ServerError.listenerFailed(reason: error.localizedDescription,
-                                                                           underlyingError: error))
+        continuation.finish(throwing: ListenerError.failed(reason: error.localizedDescription,
+                                                           underlyingError: error))
       default:
         break
     }
   }
+}
+
+enum ListenerError: Error {
+  case failed(reason: String, underlyingError: Error)
 }
