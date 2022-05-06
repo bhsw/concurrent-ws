@@ -435,8 +435,8 @@ fileprivate extension Data {
   mutating func mask(using key: UInt32, range: Range<Data.Index>) {
     let mask: [UInt8] = [
       UInt8(key >> 24),
-      UInt8(key >> 16),
-      UInt8(key >> 8),
+      UInt8(key >> 16 & 255),
+      UInt8(key >> 8 & 255),
       UInt8(key & 255)
     ]
     var maskIndex = 0

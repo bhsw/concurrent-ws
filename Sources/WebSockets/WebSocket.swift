@@ -328,6 +328,9 @@ public actor WebSocket {
   ///   the socket's event sequence as the final event.
   /// * If `closing` or `closed`, this function has no effect.
   ///
+  /// It is important to keep in mind that this function returns immediately; it does not wait for the socket to finish closing. That effect can be
+  /// achieved by calling this function and then `await`ing the result of the `Task` that is processing events emitted by the socket.
+  ///
   /// - Parameters:
   ///   - code: The close code. Note that any restricted close codes are silently converted to `.normalClosure`.
   ///   - reason: The reason. The WebSocket protocol limits the reason to 123 UTF-8 code units. If this limit is exceeded, the reason will be truncated

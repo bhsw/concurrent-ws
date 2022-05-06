@@ -9,8 +9,8 @@ struct App {
   static func main() async {
     do {
 //      try await testClient()
-      try await testSimpleClient()
-//      try await testServer()
+//      try await testSimpleClient()
+      try await testServer()
     } catch {
       print("ERROR:", error)
     }
@@ -74,47 +74,12 @@ struct App {
   }
 
   static func testServer() async throws {
-    let server = WebSocketServer(port: 80)
-    Task {
-      try await Task.sleep(nanoseconds: 100_000_000_000)
-//      listener.stop()
-    }
-    for try await event in server {
-      switch event {
-        case .ready:
-          print("* Server ready")
-        case .networkUnavailable:
-          print("* Server reports network unavailable")
-        case .client(let client):
-          Task {
-            do {
-              let req = try await client.request()
-              print(req)
-              if req.method != .get {
-                await client.respond(with: .badRequest, plainText: "The request is invalid.")
-              } else if req.target == "/portal" {
-                await client.redirect(to: "http://ocsoft.net")
-              } else if req.target == "/ws" && req.upgradeRequested {
-                let ws = try await client.upgrade()
-                print("WS URL:", await ws.url)
-                for try await event in ws {
-                  print("WS EVENT:", event)
-                  switch event {
-                    case .open(_):
-                      await ws.send(text:" Hello, world.")
-                    default:
-                      break
-                  }
-                }
-              } else {
-                await client.respond(with: .notFound, plainText: "The requested resource was not found.")
-              }
-              print("Response sent OK")
-            } catch {
-              print("Client error:", error)
-            }
-          }
-      }
-    }
+    let server = Server(on: 8080)
+//    let timer = Task {
+//      try await Task.sleep(nanoseconds: 15_000_000_000)
+//      await server.stop()
+//    }
+    try await server.run()
+//    try await timer.value
   }
 }

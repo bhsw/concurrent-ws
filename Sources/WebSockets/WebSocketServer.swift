@@ -21,7 +21,7 @@ public actor WebSocketServer {
 
   /// Initializes a new `WebSocketServer` that listens on the specified port.
   /// - Parameter port: The port.
-  public init(port: UInt16) {
+  public init(on port: UInt16) {
     listener = Listener(port: port)
   }
 
