@@ -6,6 +6,10 @@ featuring an API based on Swift Concurrency (tasks and async/await).
 This library is written entirely in Swift and has no dependencies other than platform frameworks `Foundation`, `Network`,
 and `CryptoKit`.
 
+**IMPORTANT**: This software should be considered alpha-quality at this time. Tests are missing, and the API is subject
+to change at any time.
+
+
 ## Features
 
 * A fully documented public API.
