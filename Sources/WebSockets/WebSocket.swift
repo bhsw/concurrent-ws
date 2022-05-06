@@ -11,7 +11,7 @@ import Foundation
 /// This implementation supports both client and server WebSockets based on [RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455). See
 /// ``WebSocketServer`` for server functionality.
 ///
-/// `WebSocket` is a an `AsyncSequence` that allows you to iterate over and react to events that occur, on the connection, such as text or binary data
+/// `WebSocket` is a an `AsyncSequence` that allows you to iterate over and react to events that occur on the connection, such as text or binary data
 /// received from the other endpoint. Each websocket should have a single, dedicated `Task` that processes events from that websocket. However, the rest of
 /// the API, such as ``WebSocket/send(text:)`` and ``WebSocket/close(with:reason:)`` is designed to be used from any task or thread.
 ///
@@ -535,10 +535,12 @@ private extension WebSocket {
         }
       }
       // The server disconnected without sending a close frame.
+      readyState = .closing
       return finishClose()
     } catch let error as WebSocketError {
       // The connection threw an error.
       pendingCloseReason = error.localizedDescription
+      readyState = .closing
       return finishClose()
     } catch {
       // This should never happen, since connections are only supposed to throw WebSocketErrors.
