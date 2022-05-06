@@ -74,7 +74,7 @@ struct App {
   }
 
   static func testServer() async throws {
-    let server = Server(on: 8080)
+    let server = EchoServer(on: 8080)
 //    let timer = Task {
 //      try await Task.sleep(nanoseconds: 15_000_000_000)
 //      await server.stop()

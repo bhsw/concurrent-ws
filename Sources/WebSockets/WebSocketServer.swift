@@ -18,6 +18,8 @@ public actor WebSocketServer {
   }
 
   private let listener: Listener
+  private var uncommittedConnections: [Connection] = []
+  private var stopped = false
 
   /// Initializes a new `WebSocketServer` that listens on the specified port.
   /// - Parameter port: The port.
@@ -27,9 +29,22 @@ public actor WebSocketServer {
 
   /// Stops accepting new connections.
   ///
+  /// Any connections that are in the handshake phase are closed. However, connections that have already been upgraded to websockets are not affected.
+  ///
   /// Any further attempts to iterate over the server's events will return `nil`.
   public func stop() {
+    stopped = true
     listener.stop()
+    for connection in uncommittedConnections {
+      connection.close()
+    }
+    uncommittedConnections.removeAll()
+  }
+
+  func removeUncommitted(connection: Connection) {
+    if let index = uncommittedConnections.firstIndex(where: { $0 === connection }) {
+      uncommittedConnections.remove(at: index)
+    }
   }
 }
 
@@ -55,7 +70,14 @@ extension WebSocketServer : AsyncSequence, AsyncIteratorProtocol {
         case .networkUnavailable:
           return .networkUnavailable
         case .connection(let connection):
-          return .client(.init(from: connection))
+          guard !stopped else {
+            // Prevents a very rare race condition where a connection finishing up the websocket handshake could
+            // escape the `stop` logic.
+            return nil
+          }
+          let client = Client(from: connection, server: self)
+          uncommittedConnections.append(connection)
+          return .client(client)
       }
     }
     return nil
@@ -138,11 +160,13 @@ extension WebSocketServer {
     }
 
     private let connection: Connection
+    private weak var server: WebSocketServer?
     private var state: State = .initialized
     private var request: HTTPMessage?
 
-    init(from connection: Connection) {
+    init(from connection: Connection, server: WebSocketServer) {
       self.connection = connection
+      self.server = server
     }
 
     deinit {
@@ -158,9 +182,14 @@ extension WebSocketServer {
     /// so that the server is able to return to accepting connections in a timely manner.
     /// - Returns: The request.
     /// - Throws: ``WebSocketError`` if the request could not be read or is invalid.
-    public func request() async throws -> Request {
+    public func request(timeout: TimeInterval = 30) async throws -> Request {
       precondition(state == .initialized)
       state = .readingRequest
+      let timer = Task {
+        if (try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)) != nil {
+          connection.close()
+        }
+      }
       var parser = HTTPMessage.Parser()
       do {
         for try await event in connection {
@@ -177,6 +206,7 @@ extension WebSocketServer {
                   }
                   self.request = message
                   state = .pendingResponse
+                  timer.cancel()
                   return Request(method: message.method!, target: message.target!,
                                  host: message.host, extraHeaders: message.extraHeaders,
                                  contentType: ContentType(from: message.contentType),
@@ -190,7 +220,9 @@ extension WebSocketServer {
         }
         throw WebSocketError.invalidHTTPRequest
       } catch {
+        timer.cancel()
         state = .done
+        await server?.removeUncommitted(connection: connection)
         throw error
       }
     }
@@ -206,6 +238,7 @@ extension WebSocketServer {
     public func respond(with response: Response) async throws {
       precondition(state == .pendingResponse)
       state = .sendingResponse
+      await server?.removeUncommitted(connection: connection)
       var message = HTTPMessage(status: response.status, reason: response.status.description)
       if response.status.kind == .redirection, let location = response.location {
         message.location = location
@@ -223,14 +256,12 @@ extension WebSocketServer {
           message.contentType = token
         }
       }
-      defer {
-        state = .done
-        connection.close()
-      }
       guard let data = message.encode() else {
+        connection.close()
         throw WebSocketError.invalidHTTPResponse
       }
       await connection.send(data: data)
+      connection.close()
     }
 
     /// Sends an ordinary HTTP response with a plain text body.
@@ -279,9 +310,11 @@ extension WebSocketServer {
                         extraHeaders: [String: String] = [:],
                         options: WebSocket.Options = WebSocket.Options()) async throws -> WebSocket {
       precondition(state == .pendingResponse)
+      await server?.removeUncommitted(connection: connection)
       state = .sendingResponse
       let response = makeServerHandshakeResponse(to: request!, subprotocol: subprotocol, extraHeaders: extraHeaders)
       guard let data = response.encode() else {
+        connection.close()
         throw WebSocketError.invalidHTTPResponse
       }
       await connection.send(data: data)

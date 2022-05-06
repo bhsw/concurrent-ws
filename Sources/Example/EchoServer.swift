@@ -4,8 +4,6 @@
 import Foundation
 import WebSockets
 
-typealias ConnectionId = Int64
-
 // A simple WebSocket echo server that accepts WebSocket connections and echoes back any text or binary messages
 // it receives from clients. Incoming message size is limited to 1 megabyte. If no message is received from a client
 // for 30 seconds, the client is disconnected.
@@ -13,10 +11,9 @@ typealias ConnectionId = Int64
 // The server also handles ordinary HTTP GET requests to "/stats" and returns a response that includes the number
 // of WebSocket clients currently connected.
 //
-actor Server {
+actor EchoServer {
   let server: WebSocketServer
-  var nextConnectionId: ConnectionId = 1
-  var connections: [ConnectionId: Connection] = [:]
+  var connections: [EchoConnection] = []
 
   init(on port: UInt16) {
     server = WebSocketServer(on: port)
@@ -42,18 +39,17 @@ actor Server {
     await server.stop()
     // Then we close any connected websockets (in parallel).
     await withTaskGroup(of: Void.self) { group in
-      for connection in connections.values {
+      for connection in connections {
         group.addTask {
           await connection.stop(with: .goingAway, reason: "The server is shutting down")
         }
       }
     }
-    assert(connections.count == 0)
   }
 
   func accept(client: WebSocketServer.Client) {
     Task {
-      guard let request = try? await client.request() else {
+      guard let request = try? await client.request(timeout: 10) else {
         return
       }
 
@@ -63,12 +59,12 @@ actor Server {
         guard let socket = try? await client.upgrade(options: options) else {
           return
         }
-        let id = nextConnectionId
-        nextConnectionId += 1
-        let connection = Connection(with: id, socket: socket)
-        connections[id] = connection
+        let connection = EchoConnection(with: socket)
+        connections.append(connection)
         await connection.start().value
-        connections[id] = nil
+        if let index = connections.firstIndex(where: { $0 === connection }) {
+          connections.remove(at: index)
+        }
         return
       }
 
@@ -81,14 +77,12 @@ actor Server {
   }
 }
 
-actor Connection {
-  let id: ConnectionId
+actor EchoConnection {
   let socket: WebSocket
   var mainTask: Task<Void, Never>?
   var watchdogTask: Task<Void, Never>?
 
-  init(with id: ConnectionId, socket: WebSocket) {
-    self.id = id
+  init(with socket: WebSocket) {
     self.socket = socket
   }
 
