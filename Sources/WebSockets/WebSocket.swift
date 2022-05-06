@@ -1,46 +1,88 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2022 Robert A. Stoerrle
+
 import Foundation
 
-// TODO: server support
 // TODO: basic authorization?
-// TODO: linux support
+// TODO: task cancellation behavior while iterating over events
 
 /// A WebSocket endpoint class with a modern API based on [Swift Concurrency](https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html).
 ///
-/// The implementation strives to be fully compliant with [RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455).
+/// This implementation supports both client and server WebSockets based on [RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455). See
+/// ``WebSocketServer`` for server functionality.
 ///
-/// Since `WebSocket` is an actor, its public interface is thread-safe.
+/// `WebSocket` is a an `AsyncSequence` that allows you to iterate over and react to events that occur, on the connection, such as text or binary data
+/// received from the other endpoint. Each websocket should have a single, dedicated `Task` that processes events from that websocket. However, the rest of
+/// the API, such as ``WebSocket/send(text:)`` and ``WebSocket/close(with:reason:)`` is designed to be used from any task or thread.
 ///
+/// The following is a simple example:
+///
+/// ```swift
+/// let socket = WebSocket(url: URL("wss://echo.websocket.events")!)
+/// do {
+///   for try await event in socket {
+///     switch event {
+///       case .open(_):
+///         print("Successfully opened the WebSocket")
+///         await socket.send(text: "Hello, world")
+///       case .text(let str):
+///         print("Received text: \(str)")
+///       case .close(code: let code, reason: _, wasClean: _):
+///         print("Closed with code: \(code)")
+///       default:
+///         print("Miscellaneous event: \(event)")
+///     }
+///   }
+/// } catch {
+///   print("An error occurred connecting to the remote endpoint: \(error)")
+/// }
+/// ```
 public actor WebSocket {
   /// Options that can be set for a `WebSocket` instance.
   public struct Options {
-    /// Zero or more subprotocols supported by the socket. If this list is not empty, the other endpoint must also support at least
-    /// one of the given subprotocols for the connection to be established. Defaults to an empty list.
+    /// Zero or more subprotocols supported by the client, ordered from most preferred to least preferred. Defaults to `[]`.
+    ///
+    /// The server may accept one of the listed protocols, or it may decline to accept any of them. The only thing that is prohibited is for the server
+    /// to assert a subprotocol that was not offered by the client.
+    ///
+    /// This option does not apply to server-side sockets created by ``WebSocketServer``
     public var subprotocols: [String] = []
 
     /// Whether the socket should automatically respond to incoming `ping` frames with matching `pong` frames. Defaults to `true`.
     public var automaticallyRespondToPings: Bool = true
 
     /// The maximum number of HTTP redirects that will be followed during the handshake. Defaults to `5`.
+    ///
+    /// This option does not apply to server-side sockets created by ``WebSocketServer``
     public var maximumRedirects = 5
 
     /// The  number of seconds that the socket will wait for the connection to succeed before throwing an error. Defaults to `30`.
+    ///
+    /// This option does not apply to server-side sockets created by ```WebSocketServer```.
     public var openingHandshakeTimeout: TimeInterval = 30
 
     /// The  number of seconds that the socket will wait for the other endpoint to acknowledge a request to close the connection. Defaults to `30`.
     public var closingHandshakeTimeout: TimeInterval = 30
 
     /// Whether to enable TCP fast open. Defaults to `false`.
+    ///
+    /// This option does not apply to server-side sockets created by ``WebSocketServer``.
     public var enableFastOpen: Bool = false
 
-    /// The maximum payload size, in bytes, of an incoming text or binary message. If this limit is exceeded, the connection is closed with a policy
-    /// violation error. Defaults to `Int.max`
+    /// The maximum payload size, in bytes, of an incoming text or binary message. Defaults to `Int.max`.
+    ///
+    /// If this limit is exceeded, the connection is closed with a policy violation error.
     public var maximumIncomingMessageSize: Int = Int.max
 
     /// The maximum number of incoming bytes handled during a single receive operation. Defaults to `32768`.
     public var receiveChunkSize: Int = 32768
 
-    /// Additional headers to add to the initial HTTP request. The dictionary maps header names to associated values. Note that headers that are relied upon
-    /// to complete the handshake  (such as `Sec-*` or `Upgrade`) are considered forbidden and will be ignored if included.
+    /// Additional headers to add to the initial HTTP request. Defaults to `[:]`.
+    ///
+    /// The dictionary maps header names to associated values. Note that headers that are relied upon to complete the handshake
+    /// (such as `Sec-*` or `Upgrade`) are considered forbidden and will be ignored if included.
+    ///
+    /// This option does not apply to server-side sockets created by ``WebSocketServer``.
     public var extraHeaders: [String: String] = [:]
 
     /// Initializes a default set of WebSocket options.
@@ -50,7 +92,9 @@ public actor WebSocket {
 
   /// An event that has occurred on a `WebSocket`.
   public enum Event {
-    /// Indicates that a connection to the remote endpoint was successful. This event is emitted exactly once and is always the first event emitted.
+    /// Indicates that a connection to the remote endpoint was successful.
+    ///
+    /// This event is emitted exactly once and is always the first event emitted.
     case open(HandshakeResult)
 
     /// Indicates that a text message was received from the other endpoint.
@@ -59,8 +103,10 @@ public actor WebSocket {
     /// Indicates that a textual message was received from the other endpoint.
     case binary(Data)
 
-    /// Indicates that the connection has been closed. This event is emitted exactly once and is always the final event emitted.  The `wasClean` parameter
-    /// will be `true` if the WebSocket closing handshake completed successfully, or `false` if an endpoint terminated the connection unilaterally.
+    /// Indicates that the connection has been closed.
+    ///
+    /// This event is emitted exactly once and is always the final event emitted.  The `wasClean` parameter will be `true` if the WebSocket
+    /// closing handshake completed successfully, or `false` if an endpoint terminated the connection unilaterally.
     case close(code: CloseCode, reason: String, wasClean: Bool)
 
     /// Indicates that a `ping` frame has been received from the other endpoint.
@@ -72,8 +118,9 @@ public actor WebSocket {
     /// Indicates that the network path used by the connection has ceased to be viable (`false`) or regained viability (`true`).
     case connectionViability(Bool)
 
-    /// Indicates that a better network path has become available (`true`) or is no longer available (`false`). This is often a signal that, for example,
-    /// wi-fi has become an option where a cellular connection is currently in use.
+    /// Indicates that a better network path has become available (`true`) or is no longer available (`false`).
+    ///
+    /// This is often a signal that, for example, wi-fi has become an option where a cellular connection is currently in use.
     case betterConnectionAvailable(Bool)
   }
 
@@ -82,27 +129,68 @@ public actor WebSocket {
     /// The  socket has been initialized, but no attempt has been made yet to establish the connection.
     case initialized
 
-    /// The socket is currently working to establish a connection to the other endpoint. This includes the handshakes for the TCP, TLS (if applicable), and
-    /// WebSocket protocols.
+    /// The socket is currently working to establish a connection to the other endpoint.
+    ///
+    /// This includes the handshakes for the TCP, TLS (if applicable), and WebSocket protocols.
     case connecting
 
     /// A successful connection was established.
     case open
 
-    /// The connection is being closed. The socket remains in this state until it has received an acknowledgement from the other endpoint, or the
-    /// timeout has been reached.
+    /// The connection is being closed.
+    ///
+    /// The socket remains in this state until it has received an acknowledgement from the other endpoint, or the timeout has been reached.
     case closing
 
     /// The connection is closed.
     case closed
   }
 
-  /// The  status of the socket. Note that accessing this property outside of your event processing loop is a probably a TOCTOU (time-of-check to time-of-use)
+  /// The result of a successful WebSocket opening handshake.
+  public struct HandshakeResult {
+    /// The subprotocol that was negotiated by the endpoints, or `nil` if no subprotocol is in effect.
+    public let subprotocol: String?
+
+    /// Any HTTP headers received from the other endpoint that were not pertinent to the WebSocket handshake.
+    ///
+    /// The dictionary maps lowercase header names to associated values.
+    ///
+    /// For client-side sockets, the headers are from the server's *response* to the initial HTTP request.
+    /// For server-side sockets created by ``WebSocketServer``, the headers are from the initial HTTP *request* received from the client.
+    public let extraHeaders: [String: String]
+  }
+
+  /// The result of a failed WebSocket opening handshake.
+  public struct FailedHandshakeResult {
+    /// The HTTP status code.
+    public let status: HTTPStatus
+
+    /// The HTTP reason string.
+    public let reason: String
+
+    /// Any headers received in the HTTP response that were not pertinent to the WebSocket handshake. The dictionary maps lowercase header names to associated values.
+    public let extraHeaders: [String: String]
+
+    /// The content type of the response body, if any.
+    public let contentType: ContentType?
+
+    // The response body if one was provided.
+    public let content: Data?
+  }
+
+  /// The  status of the socket.
+  ///
+  /// Note that accessing this property outside of your event processing loop is a probably a TOCTOU (time-of-check to time-of-use)
   /// race condition, since the state may change between the time you request it and act on the result.
   public private(set) var readyState: ReadyState = .initialized
 
-  /// The URL. This will be the same URL passed to the initializer unless a redirect has occurred. This property's value is subject to change until the `open`
-  /// state is reached.
+  /// The URL.
+  ///
+  /// For client-side sockets, this will be the same URL passed to the initializer unless a redirect has occurred. This property's value is subject to change
+  /// until the `open` state is reached.
+  ///
+  /// For sockets created by ``WebSocketServer``, the value of this property wil be a relative URL matching the resource path requested by
+  /// the client in the opening handshake (e.g. `/api/events`).
   public private(set) var url: URL
 
   /// The options that were passed to the initializer.
@@ -124,6 +212,9 @@ public actor WebSocket {
   /// Initializes a new `WebSocket` instance.
   ///
   /// Note that the connection will not be attempted until a task requests the first event from the sequence.
+  ///
+  /// - Parameter url: The URL of the endpoint to which to connect. The scheme must be `ws` or `wss`.
+  /// - Parameter options: The options.
   public init(url: URL, options: Options = .init()) {
     self.url = url
     self.options = options
@@ -131,13 +222,22 @@ public actor WebSocket {
     inputFramer = InputFramer(forClient: true, maximumMessageSize: options.maximumIncomingMessageSize)
   }
 
+  /// Initializes a server-side `WebSocket`.
+  ///
+  /// This internal API is used by ``WebSocketServer``.
+  ///
+  /// - Parameter url: The URL requested by the client.
+  /// - Parameter connection: The connection to the client. The server WebSocket handshake must already be complete.
+  /// - Parameter handshakeResult: The result of the handshake.
+  /// - Parameter options: The options.
   init(url: URL, connection: Connection, handshakeResult: HandshakeResult, options: Options) {
     self.url = url
     self.options = options
+    self.connection = connection
     self.handshakeResult = handshakeResult
     outputFramer = OutputFramer(forClient: false)
     inputFramer = InputFramer(forClient: false, maximumMessageSize: options.maximumIncomingMessageSize)
-    // TODO connection.reconfigure()
+    connection.reconfigure(with: options)
     readyState = .connecting
   }
 
@@ -272,7 +372,7 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
 
   /// Gets the next available event.
   /// - Returns: The event, or `nil` if the socket has entered the `closed` state, and no further events will be emitted.
-  /// - Throws: `HandshakeError` if an error occurs while the socket is in the `connecting` state. Errors are never thrown in any other state.
+  /// - Throws: ``WebSocketError`` if an error occurs while the socket is in the `connecting` state. Errors are never thrown in any other state.
   public func next() async throws -> Event? {
     switch readyState {
       case .initialized:
@@ -280,6 +380,7 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
       case .connecting:
         // We should only ever get here for server-side WebSockets.
         precondition(handshakeResult != nil)
+        readyState = .open
         return .open(handshakeResult!)
       case .open, .closing:
         return await nextEvent()
@@ -316,14 +417,14 @@ private extension WebSocket {
 
   /// Performs the opening HTTP handshake.
   /// - Returns: The `open` event, or `nil` if the connection was closed prior to the handshake completing.
-  /// - Throws: `HandshakeError` if the handshake fails.
+  /// - Throws: ``WebSocketError`` if the handshake fails.
   func connect() async throws -> Event? {
     precondition(readyState == .initialized || readyState == .connecting)
     guard let scheme = url.scheme?.lowercased(), let host = url.host else {
-      throw HandshakeError.invalidURL(url)
+      throw WebSocketError.invalidURL(url)
     }
     guard scheme == "ws" || scheme == "wss" else {
-      throw HandshakeError.invalidURLScheme(scheme)
+      throw WebSocketError.invalidURLScheme(scheme)
     }
 
     readyState = .connecting
@@ -342,9 +443,7 @@ private extension WebSocket {
 
     let useTLS = scheme == "wss"
     let port = UInt16(url.port ?? (useTLS ? 443 : 80))
-    let connectionOptions = Connection.Options(receiveChunkSize: options.receiveChunkSize,
-                                               enableFastOpen: options.enableFastOpen)
-    connection = Connection(host: host, port: port, tls: useTLS, options: connectionOptions)
+    connection = Connection(host: host, port: port, tls: useTLS, options: options)
     let handshake = ClientHandshake(options: options)
     do {
       for try await event in connection! {
@@ -368,10 +467,10 @@ private extension WebSocket {
                 return .open(result)
               case .redirect(let location):
                 guard redirectCount < options.maximumRedirects else {
-                  throw HandshakeError.maxRedirectsExceeded
+                  throw WebSocketError.maxRedirectsExceeded
                 }
                 guard let newURL = URL(string: location, relativeTo: url) else {
-                  throw HandshakeError.invalidRedirectLocation(location)
+                  throw WebSocketError.invalidRedirectLocation(location)
                 }
                 redirectCount += 1
                 connection!.close()
@@ -384,10 +483,10 @@ private extension WebSocket {
         }
       }
       if openingHandshakeDidExpire {
-        throw HandshakeError.timeout
+        throw WebSocketError.timeout
       }
-      throw HandshakeError.unexpectedDisconnect
-    } catch let error as HandshakeError {
+      throw WebSocketError.unexpectedDisconnect
+    } catch let error as WebSocketError {
       cancelHandshakeTimer()
       let suppressError = readyState == .closed && !openingHandshakeDidExpire
       if readyState != .closed {
@@ -404,7 +503,7 @@ private extension WebSocket {
       }
       throw error
     } catch {
-      fatalError("Connection is only allowed to throw HandshakeError")
+      fatalError("Connection is only allowed to throw WebSocketError")
     }
   }
 
@@ -437,13 +536,13 @@ private extension WebSocket {
       }
       // The server disconnected without sending a close frame.
       return finishClose()
-    } catch let error as HandshakeError {
+    } catch let error as WebSocketError {
       // The connection threw an error.
       pendingCloseReason = error.localizedDescription
       return finishClose()
     } catch {
-      // This should never happen, since connections are only supposed to throw HandshakeErrors.
-      fatalError("Connection in only allowed to throw HandshakeError")
+      // This should never happen, since connections are only supposed to throw WebSocketErrors.
+      fatalError("Connection in only allowed to throw WebSocketError")
     }
   }
 

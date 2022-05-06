@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2022 Robert A. Stoerrle
+
 import Foundation
 
 /// An HTTP request or response, with just enough functionality to support the WebSocket opening handshake.
@@ -119,7 +122,6 @@ internal struct HTTPMessage {
   }
 
   func encode() -> Data? {
-    print(headerString)
     guard var data = headerString.data(using: .isoLatin1) else {
       return nil
     }

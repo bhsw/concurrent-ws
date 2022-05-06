@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2022 Robert A. Stoerrle
+
 import Foundation
 import WebSockets
 
@@ -6,7 +9,8 @@ struct App {
   static func main() async {
     do {
 //      try await testClient()
-      try await testServer()
+      try await testSimpleClient()
+//      try await testServer()
     } catch {
       print("ERROR:", error)
     }
@@ -33,7 +37,7 @@ struct App {
       for try await event in sock {
         print("EVENT:", event)
       }
-    } catch WebSocket.HandshakeError.unexpectedHTTPStatus(let result) {
+    } catch WebSocketError.unexpectedHTTPStatus(let result) {
       print("STATUS:", result.status)
       if let contentType = result.contentType {
         print("CONTENT-TYPE:", contentType)
@@ -46,6 +50,27 @@ struct App {
     }
 
     await t.value
+  }
+
+  static func testSimpleClient() async throws {
+    let socket = WebSocket(url: URL(string: "wss://echo.websocket.events")!)
+    do {
+      for try await event in socket {
+        switch event {
+          case .open(_):
+            print("Successfully opened the WebSocket")
+            await socket.send(text: "Hello, world")
+          case .text(let str):
+            print("Received text: \(str)")
+          case .close(code: let code, reason: _, wasClean: _):
+            print("Closed with code: \(code)")
+          default:
+            print("Miscellaneous event: \(event)")
+        }
+      }
+    } catch {
+      print("An error occurred connecting to the remote endpoint: \(error)")
+    }
   }
 
   static func testServer() async throws {
@@ -66,11 +91,23 @@ struct App {
               let req = try await client.request()
               print(req)
               if req.method != .get {
-                try await client.badRequest()
+                await client.respond(with: .badRequest, plainText: "The request is invalid.")
               } else if req.target == "/portal" {
-                try await client.redirect(to: "http://ocsoft.net")
+                await client.redirect(to: "http://ocsoft.net")
+              } else if req.target == "/ws" && req.upgradeRequested {
+                let ws = try await client.upgrade()
+                print("WS URL:", await ws.url)
+                for try await event in ws {
+                  print("WS EVENT:", event)
+                  switch event {
+                    case .open(_):
+                      await ws.send(text:" Hello, world.")
+                    default:
+                      break
+                  }
+                }
               } else {
-                try await client.notFound()
+                await client.respond(with: .notFound, plainText: "The requested resource was not found.")
               }
               print("Response sent OK")
             } catch {

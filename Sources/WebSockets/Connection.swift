@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2022 Robert A. Stoerrle
+
 import Foundation
 import Network
 
@@ -21,11 +24,6 @@ class Connection: AsyncSequence {
     case betterPathAvailable(Bool)
   }
 
-  struct Options {
-    var receiveChunkSize = 65536
-    var enableFastOpen = true
-  }
-
   typealias StreamType = AsyncThrowingStream<Event, Error>
   typealias AsyncIterator = StreamType.Iterator
   typealias Element = Event
@@ -36,7 +34,7 @@ class Connection: AsyncSequence {
   private var continuation: StreamType.Continuation!
   private var connection: NWConnection
 
-  init(with connection: NWConnection, options: Options = Options()) {
+  init(with connection: NWConnection, options: WebSocket.Options = .init()) {
     let endpoint = connection.endpoint
     dispatchQueue = DispatchQueue(label: "WebSocket \(endpoint)")
     receiveChunkSize = options.receiveChunkSize
@@ -60,7 +58,7 @@ class Connection: AsyncSequence {
     }
   }
 
-  convenience init(host: String, port: UInt16, tls: Bool, options: Options = Options()) {
+  convenience init(host: String, port: UInt16, tls: Bool, options: WebSocket.Options = .init()) {
     let tcp = NWProtocolTCP.Options()
     tcp.enableFastOpen = options.enableFastOpen
 
@@ -100,7 +98,7 @@ class Connection: AsyncSequence {
     return stream.makeAsyncIterator()
   }
 
-  func reconfigure(options: Options) {
+  func reconfigure(with options: WebSocket.Options) {
     dispatchQueue.async { [weak self] in
       self?.receiveChunkSize = options.receiveChunkSize
     }
@@ -143,7 +141,7 @@ class Connection: AsyncSequence {
     continuation.finish(throwing: connectionError(from: error))
   }
 
-  func connectionError(from error: NWError) -> WebSocket.HandshakeError {
+  func connectionError(from error: NWError) -> WebSocketError {
     switch error {
       case .posix(let code):
         let posixError = POSIXError(code)

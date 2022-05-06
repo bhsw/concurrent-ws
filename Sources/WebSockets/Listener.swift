@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright 2022 Robert A. Stoerrle
+
 import Foundation
 import Network
 
@@ -17,7 +20,7 @@ class Listener: AsyncSequence {
   private var continuation: StreamType.Continuation!
   private var listener: NWListener?
 
-  init(port: UInt16, connectionOptions: Connection.Options = .init()) {
+  init(port: UInt16) {
     dispatchQueue = DispatchQueue(label: "WebSocket listener on port \(port)")
     stream = AsyncThrowingStream { continuation in
       self.continuation = continuation
@@ -30,15 +33,15 @@ class Listener: AsyncSequence {
     do {
       listener = try NWListener(using: params, on: .init(rawValue: port)!)
       listener!.newConnectionHandler = { [weak self] connection in
-        self?.continuation.yield(.connection(Connection(with: connection, options: connectionOptions)))
+        self?.continuation.yield(.connection(Connection(with: connection)))
       }
       listener!.stateUpdateHandler = { [weak self] state in
         self?.stateChanged(to: state)
       }
       listener!.start(queue: dispatchQueue)
     } catch {
-      continuation.finish(throwing: ListenerError.failed(reason: error.localizedDescription,
-                                                        underlyingError: error))
+      continuation.finish(throwing: WebSocketError.listenerFailed(reason: error.localizedDescription,
+                                                                  underlyingError: error))
     }
   }
 
@@ -62,14 +65,10 @@ class Listener: AsyncSequence {
       case .waiting(_):
         continuation.yield(.networkUnavailable)
       case .failed(let error):
-        continuation.finish(throwing: ListenerError.failed(reason: error.localizedDescription,
-                                                           underlyingError: error))
+        continuation.finish(throwing: WebSocketError.listenerFailed(reason: error.localizedDescription,
+                                                                    underlyingError: error))
       default:
         break
     }
   }
-}
-
-enum ListenerError: Error {
-  case failed(reason: String, underlyingError: Error)
 }
