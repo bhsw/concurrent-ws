@@ -1,6 +1,6 @@
 # concurrent-websockets
 
-An implementation of WebSockets ([RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455)) for Swift 5.6 and above,
+An implementation of WebSockets ([RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455)) for Swift 5.5 and above,
 featuring an API based on Swift Concurrency (tasks and async/await).
 
 This library is written entirely in Swift and has no dependencies other than platform frameworks `Foundation`, `Network`,
