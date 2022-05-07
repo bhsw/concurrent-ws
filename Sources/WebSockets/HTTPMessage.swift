@@ -121,10 +121,8 @@ internal struct HTTPMessage {
     return result
   }
 
-  func encode() -> Data? {
-    guard var data = headerString.data(using: .isoLatin1) else {
-      return nil
-    }
+  func encode() -> Data {
+    var data = headerString.data(using: .isoLatin1, allowLossyConversion: true)!
     if let content = content {
       data += content
     }

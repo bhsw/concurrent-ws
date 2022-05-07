@@ -5,6 +5,16 @@ import Foundation
 
 /// A simple HTTP 1.1 server that supports upgrading connections to WebSockets.
 public actor WebSocketServer {
+  /// Options that can be set for a `WebSocketServer` instance.
+  public struct Options {
+    /// The  number of seconds that the server will wait for an incoming connection to send an HTTP request before dropping the connection. Defaults to `30`.
+    public var requestTimeout: TimeInterval = 30
+
+    /// Initializes a default set of server options.
+    public init() {
+    }
+  }
+
   /// An event that has occured on a `WebSocketServer`.
   public enum Event {
     /// Indicates that the server is ready to accept requests.
@@ -13,44 +23,48 @@ public actor WebSocketServer {
     /// Indicates that no network is currently available on which to receive requests.
     case networkUnavailable
 
-    /// Indicates that a new connection has been received from an HTTP client.
-    case client(Client)
+    /// Indicates that an HTTP request has been received
+    case request(Request)
   }
 
   private let listener: Listener
+  private let options: Options
   private var uncommittedConnections: [Connection] = []
-  private var stopped = false
+  private var state: State = .initialized
+  private var eventQueue = EventQueue<Event>()
 
   /// Initializes a new `WebSocketServer` that listens on the specified port.
   /// - Parameter port: The port.
-  public init(on port: UInt16) {
+  public init(on port: UInt16, options: Options = Options()) {
     listener = Listener(port: port)
+    self.options = options
+  }
+
+  /// The port on which the server accepts connections.
+  public nonisolated var port: UInt16 {
+    listener.port
   }
 
   /// Stops accepting new connections.
   ///
-  /// Any connections that are in the handshake phase are closed. However, connections that have already been upgraded to websockets are not affected.
-  ///
-  /// Any further attempts to iterate over the server's events will return `nil`.
+  /// This function has no effect on connections that have already been upgraded to websockets. Incoming connections that have not been upgraded to websockets are
+  /// closed without an HTTP response. However, any
   public func stop() {
-    stopped = true
+    guard state == .started else {
+      return
+    }
     listener.stop()
     for connection in uncommittedConnections {
       connection.close()
     }
     uncommittedConnections.removeAll()
-  }
-
-  func removeUncommitted(connection: Connection) {
-    if let index = uncommittedConnections.firstIndex(where: { $0 === connection }) {
-      uncommittedConnections.remove(at: index)
-    }
+    state = .stopped
   }
 }
 
 // MARK: AsyncSequence conformance
 
-extension WebSocketServer : AsyncSequence, AsyncIteratorProtocol {
+extension WebSocketServer: AsyncSequence, AsyncIteratorProtocol {
   public typealias Element = Event
 
   /// Gets the asynchronous iterator that can be used to loop over events emitted by the server.
@@ -63,58 +77,251 @@ extension WebSocketServer : AsyncSequence, AsyncIteratorProtocol {
   /// - Returns: The event, or `nil` if the server has been stopped.
   /// - Throws: ``WebSocketError/listenerFailed(reason:underlyingError:)`` if the connection listener fails.
   public func next() async throws -> Event? {
-    for try await event in listener {
-      switch event {
-        case .ready:
-          return .ready
-        case .networkUnavailable:
-          return .networkUnavailable
-        case .connection(let connection):
-          guard !stopped else {
-            // Prevents a very rare race condition where a connection finishing up the websocket handshake could
-            // escape the `stop` logic.
-            return nil
-          }
-          let client = Client(from: connection, server: self)
-          uncommittedConnections.append(connection)
-          return .client(client)
-      }
-    }
-    return nil
+    start()
+    return try await eventQueue.pop()
   }
 }
 
-// MARK: Client
+// MARK: Private implementation
+
+extension WebSocketServer {
+  private enum State {
+    case initialized
+    case started
+    case stopped
+  }
+
+  private func start() {
+    guard state == .initialized else {
+      return
+    }
+    state = .started
+    Task {
+      do {
+        for try await event in listener {
+          switch event {
+            case .ready:
+              eventQueue.push(.ready)
+            case .networkUnavailable:
+              eventQueue.push(.networkUnavailable)
+            case .connection(let connection):
+              accept(connection: connection)
+          }
+        }
+        eventQueue.finish()
+      } catch {
+        eventQueue.finish(throwing: error)
+      }
+    }
+  }
+
+  private func accept(connection: Connection) {
+    uncommittedConnections.append(connection)
+    Task {
+      let timer = Task {
+        if (try? await Task.sleep(nanoseconds: UInt64(options.requestTimeout) * 1_000_000_000)) != nil {
+          connection.close()
+        }
+      }
+      var parser = HTTPMessage.Parser()
+      do {
+        for try await event in connection {
+          switch event {
+            case .receive(let data):
+              switch parser.append(data) {
+                case .incomplete:
+                  continue
+                case .invalid:
+                  throw WebSocketError.invalidHTTPRequest
+                case .complete(let message, unconsumed: _):
+                  guard message.kind == .request else {
+                    throw WebSocketError.invalidHTTPRequest
+                  }
+                  timer.cancel()
+                  let request = Request(from: message, connection: connection, server: self)
+                  eventQueue.push(.request(request))
+                  return
+              }
+            default:
+              break
+          }
+        }
+        throw WebSocketError.invalidHTTPRequest
+      } catch {
+        timer.cancel()
+        removeUncommitted(connection: connection)
+        connection.close()
+      }
+    }
+  }
+
+  @discardableResult
+  func removeUncommitted(connection: Connection) -> Bool {
+    if let index = uncommittedConnections.firstIndex(where: { $0 === connection }) {
+      uncommittedConnections.remove(at: index)
+      return true
+    }
+    return false
+  }
+}
+
+// MARK: Request
 
 extension WebSocketServer {
   /// Information about an HTTP request.
-  public struct Request {
+  public class Request {
     /// The HTTP method.
-    public let method: HTTPMethod
+    public var method: HTTPMethod {
+      message.method!
+    }
 
     /// The request target (e.g. `/api/status`)
-    public let target: String
+    public var target: String {
+      message.target!
+    }
 
     /// The value of the `Host` header, or `nil` if the request did not include that header.
-    public let host: String?
+    public var host: String? {
+      message.host
+    }
 
     /// Additional headers included with the request.
     ///
     /// The dictionary maps header names to associated values.
-    public let extraHeaders: [String: String]
+    public var extraHeaders: [String: String] {
+      message.extraHeaders
+    }
 
     /// The content type associated with the body of the request, or `nil` if unspecified.
-    public let contentType: ContentType?
+    public var contentType: ContentType? {
+      ContentType(from: message.contentType)
+    }
 
     /// The body of the request, or `nil` if the request does not include a body.
-    public let content: Data?
+    public var content: Data? {
+      message.content
+    }
 
     /// Whether the client is requesting an upgrade to the WebSocket protocol.
-    public let upgradeRequested: Bool
+    public var upgradeRequested: Bool {
+      message.upgrade.contains(websocketProtocol)
+    }
 
     /// The list of WebSocket subprotocols that the client would like to use, ordered from most preferred to least preferred.
-    public let subprotocols: [String]
-      // TODO: endpoint info
+    public var subprotocols: [String] {
+      message.webSocketProtocol
+    }
+
+    /// The client's IP address.
+    public var clientAddress: String {
+      connection.host!
+    }
+
+    /// The client's port.
+    public var clientPort: UInt16 {
+      connection.port!
+    }
+
+    /// The client's IP address and port.
+    public var clientEndpoint: String {
+      "\(clientAddress):\(clientPort)"
+    }
+
+    private let message: HTTPMessage
+    private let connection: Connection
+    private weak var server: WebSocketServer?
+
+    init(from message: HTTPMessage, connection: Connection, server: WebSocketServer) {
+      self.message = message
+      self.connection = connection
+      self.server = server
+    }
+
+    /// Sends an ordinary HTTP response to the request.
+    ///
+    /// If a response has already been sent, or the connection has been upgraded to a WebSocket, this function has no effect.
+    /// - Parameter response: The response.
+    public func respond(with response: Response) async {
+      guard let server = server, await server.removeUncommitted(connection: connection) else {
+        // An attempt was already made to respond to the request.
+        return
+      }
+      var message = HTTPMessage(status: response.status, reason: response.status.description)
+      if response.status.kind == .redirection, let location = response.location {
+        message.location = location
+      }
+      message.extraHeaders = response.extraHeaders
+      message.addConnection("close")
+      if response.status.allowsContent, let content = response.content {
+        message.contentLength = content.count
+        if method != .head {
+          message.content = content
+        }
+        if let contentType = response.contentType {
+          var token = ParameterizedToken(token: contentType.mediaType)
+          token.set(parameter: "charset", to: contentType.charset)
+          message.contentType = token
+        }
+      }
+      await connection.send(data: message.encode())
+      connection.close()
+    }
+
+    /// Sends an ordinary HTTP response with a plain text body.
+    ///
+    /// If a response has already been sent, or the connection has been upgraded to a WebSocket, this function has no effect.
+    ///
+    /// - Parameter status: The HTTP status code.
+    /// - Parameter plainText: The response body.
+    public func respond(with status: HTTPStatus, plainText text: String) async {
+      var response = Response(with: status)
+      response.contentType = .init(mediaType: "text/plain", charset: "utf-8")
+      response.content = text.data(using: .utf8)
+      // We know there aren't any funky extra headers in our response, so we can assume that this will always succeed.
+      return await respond(with: response)
+    }
+
+    /// Sends an HTTP redirect response.
+    ///
+    /// If a response has already been sent, or the connection has been upgraded to a WebSocket, this function has no effect.
+    ///
+    /// - Parameter status: The HTTP status code.
+    /// - Parameter location: The target location.
+    public func redirect(with status: HTTPStatus = .movedPermanently, to location: String) async {
+      precondition(status.kind == .redirection)
+      var response = Response(with: status)
+      response.location = location
+      return await respond(with: response)
+    }
+
+    /// Upgrades the request's connection to a WebSocket.
+    ///
+    /// The request must be a valid WebSocket upgrade request. If it is not, an appropriate HTTP error response is sent, and the connection is closed.
+    /// - Parameter subprotocol: The selected subprotocol. If not `nil`, this must be one of the options from the request's
+    ///   ``WebSocketServer/Request/subprotocols``.
+    /// - Parameter extraHeaders: Additional headers to include with the HTTP response.
+    /// - Parameter options: The options for the new WebSocket.
+    /// - Returns: The new WebSocket ready to communicate with the client, or `nil` if the upgrade could not be performed.
+    public func upgrade(subprotocol: String? = nil,
+                        extraHeaders: [String: String] = [:],
+                        options: WebSocket.Options = WebSocket.Options()) async -> WebSocket? {
+      guard let server = server, await server.removeUncommitted(connection: connection) else {
+        // An attempt was already made to respond to the request.
+        return nil
+      }
+
+      let response = makeServerHandshakeResponse(to: message, subprotocol: subprotocol, extraHeaders: extraHeaders)
+      guard await connection.send(data: response.encode()),
+            !response.status!.isError else {
+        connection.close()
+        return nil
+      }
+      let handshakeResult = WebSocket.HandshakeResult(subprotocol: subprotocol, extraHeaders: message.extraHeaders)
+      return WebSocket(url: URL(string: message.target!)!,
+                       connection: connection,
+                       handshakeResult: handshakeResult,
+                       options: options)
+    }
   }
 
   /// An HTTP response.
@@ -142,192 +349,6 @@ extension WebSocketServer {
     /// - Parameter status: The HTTP status
     public init(with status: HTTPStatus = .noContent) {
       self.status = status
-    }
-  }
-
-  /// A connection from a client accepted by a ``WebSocketServer``.
-  ///
-  /// Instances of `Client` are relatively short-lived and exist to allow incoming HTTP requests to be read and responded to by a `Task`
-  /// separate from the server's own. The handler for a client can elect to send an ordinary HTTP response or upgrade the connection to a
-  /// ``WebSocket``. After either action, the `Client` has served its purpose, and any references to it should be dropped.
-  public actor Client {
-    enum State {
-      case initialized
-      case readingRequest
-      case pendingResponse
-      case sendingResponse
-      case done
-    }
-
-    private let connection: Connection
-    private weak var server: WebSocketServer?
-    private var state: State = .initialized
-    private var request: HTTPMessage?
-
-    init(from connection: Connection, server: WebSocketServer) {
-      self.connection = connection
-      self.server = server
-    }
-
-    deinit {
-      print("* Client deinit")
-
-      // In case the Client is dropped without sending a response.
-      connection.close()
-    }
-
-    /// Reads the HTTP request from the client.
-    ///
-    /// This function should be called exactly once when the client is first provided by the ``WebSocketServer``. This should be done on a new `Task`
-    /// so that the server is able to return to accepting connections in a timely manner.
-    /// - Returns: The request.
-    /// - Throws: ``WebSocketError`` if the request could not be read or is invalid.
-    public func request(timeout: TimeInterval = 30) async throws -> Request {
-      precondition(state == .initialized)
-      state = .readingRequest
-      let timer = Task {
-        if (try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000_000)) != nil {
-          connection.close()
-        }
-      }
-      var parser = HTTPMessage.Parser()
-      do {
-        for try await event in connection {
-          switch event {
-            case .receive(let data):
-              switch parser.append(data) {
-                case .incomplete:
-                  continue
-                case .invalid:
-                  throw WebSocketError.invalidHTTPRequest
-                case .complete(let message, unconsumed: _):
-                  guard message.kind == .request else {
-                    throw WebSocketError.invalidHTTPRequest
-                  }
-                  self.request = message
-                  state = .pendingResponse
-                  timer.cancel()
-                  return Request(method: message.method!, target: message.target!,
-                                 host: message.host, extraHeaders: message.extraHeaders,
-                                 contentType: ContentType(from: message.contentType),
-                                 content: message.content,
-                                 upgradeRequested: message.upgrade.contains(.init("websocket")),
-                                 subprotocols: message.webSocketProtocol)
-              }
-            default:
-              break
-          }
-        }
-        throw WebSocketError.invalidHTTPRequest
-      } catch {
-        timer.cancel()
-        state = .done
-        await server?.removeUncommitted(connection: connection)
-        throw error
-      }
-    }
-
-    /// Sends an ordinary HTTP response to the client request.
-    ///
-    /// Note that ``WebSocketServer/Client/request()`` must have succeeded prior to calling this function. Upon return, even if there is an error, the connection
-    /// will have been closed, and any further calls to the `Client` will result in runtime errors.
-    ///
-    /// - Parameter response: The response.
-    /// - Throws: ``WebSocketError/invalidHTTPResponse`` if the response could not be encoded. This usually indicates that one or
-    ///   more extra headers could not be expressed in the ISO-8859-1 (Latin 1) character set.
-    public func respond(with response: Response) async throws {
-      precondition(state == .pendingResponse)
-      state = .sendingResponse
-      await server?.removeUncommitted(connection: connection)
-      var message = HTTPMessage(status: response.status, reason: response.status.description)
-      if response.status.kind == .redirection, let location = response.location {
-        message.location = location
-      }
-      message.extraHeaders = response.extraHeaders
-      message.addConnection("close")
-      if response.status.allowsContent, let content = response.content {
-        message.contentLength = content.count
-        if request!.method != .head {
-          message.content = content
-        }
-        if let contentType = response.contentType {
-          var token = ParameterizedToken(token: contentType.mediaType)
-          token.set(parameter: "charset", to: contentType.charset)
-          message.contentType = token
-        }
-      }
-      guard let data = message.encode() else {
-        connection.close()
-        throw WebSocketError.invalidHTTPResponse
-      }
-      await connection.send(data: data)
-      connection.close()
-    }
-
-    /// Sends an ordinary HTTP response with a plain text body.
-    ///
-    /// Note that ``WebSocketServer/Client/request()`` must have succeeded prior to calling this function. Upon return,  the connection
-    /// will have been closed, and any further calls to the `Client` will result in runtime errors.
-    ///
-    /// - Parameter status: The HTTP status code.
-    /// - Parameter plainText: The response body.
-    public func respond(with status: HTTPStatus, plainText text: String) async {
-      var response = Response(with: status)
-      response.contentType = .init(mediaType: "text/plain", charset: "utf-8")
-      response.content = text.data(using: .utf8)
-      // We know there aren't any funky extra headers in our response, so we can assume that this will always succeed.
-      return try! await respond(with: response)
-    }
-
-    /// Sends an HTTP redirect response.
-    ///
-    /// Note that ``WebSocketServer/Client/request()`` must have succeeded prior to calling this function. Upon return,  the connection
-    /// will have been closed, and any further calls to the `Client` will result in runtime errors.
-    ///
-    /// - Parameter status: The HTTP status code.
-    /// - Parameter location: The target location.
-    public func redirect(with status: HTTPStatus = .movedPermanently, to location: String) async {
-      precondition(status.kind == .redirection)
-      var response = Response(with: status)
-      response.location = location
-      return try! await respond(with: response)
-    }
-
-    /// Upgrades the connection to a WebSocket.
-    ///
-    /// Note that ``WebSocketServer/Client/request()`` must have succeeded prior to calling this function, and the resulting request must be
-    /// a valid WebSocket upgrade request. If an error occurs,  an appropriate HTTP error response is sent, and the connection is closed. Whether this function
-    /// succeeds or fails,  any further calls to the `Client` will result in runtime errors.
-    /// - Parameter subprotocol: The selected subprotocol. If not `nil`, this must be one of the options from the request's
-    ///   ``WebSocketServer/Request/subprotocols``.
-    /// - Parameter extraHeaders: Additional headers to include with the HTTP response.
-    /// - Parameter options: The options for the new WebSocket.
-    /// - Returns: The new WebSocket ready to communicate with the client.
-    /// - Throws: ``WebSocketError/invalidHTTPResponse`` if the response could not be encoded (usually because one or
-    ///   more extra headers could not be expressed in the ISO-8859-1 (Latin 1) character set),``WebSocketError/upgradeRejected``
-    ///   if the request is not a valid WebSocket upgrade request.
-    public func upgrade(subprotocol: String? = nil,
-                        extraHeaders: [String: String] = [:],
-                        options: WebSocket.Options = WebSocket.Options()) async throws -> WebSocket {
-      precondition(state == .pendingResponse)
-      await server?.removeUncommitted(connection: connection)
-      state = .sendingResponse
-      let response = makeServerHandshakeResponse(to: request!, subprotocol: subprotocol, extraHeaders: extraHeaders)
-      guard let data = response.encode() else {
-        connection.close()
-        throw WebSocketError.invalidHTTPResponse
-      }
-      await connection.send(data: data)
-      state = .done
-      guard !response.status!.isError else {
-        connection.close()
-        throw WebSocketError.upgradeRejected
-      }
-      let handshakeResult = WebSocket.HandshakeResult(subprotocol: subprotocol, extraHeaders: request!.extraHeaders)
-      return WebSocket(url: URL(string: request!.target!)!,
-                       connection: connection,
-                       handshakeResult: handshakeResult,
-                       options: options)
     }
   }
 }

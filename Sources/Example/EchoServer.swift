@@ -8,11 +8,14 @@ import WebSockets
 // it receives from clients. Incoming message size is limited to 1 megabyte. If no message is received from a client
 // for 30 seconds, the client is disconnected.
 //
-// The server also handles ordinary HTTP GET requests to "/stats" and returns a response that includes the number
-// of WebSocket clients currently connected.
+// The server also handles a couple of ordinary HTTP GET requests:
+//   * "/stats" returns a response that includes information about the clients that are currently connected.
+//   * "/shutdown/:key" shuts down the echo server using the key printed when the server is started.
 //
 actor EchoServer {
+  let shutdownKey = UInt64.random(in: 1...UInt64.max)
   let server: WebSocketServer
+  var nextConnectionId: UInt64 = 1
   var connections: [EchoConnection] = []
 
   init(on port: UInt16) {
@@ -23,11 +26,11 @@ actor EchoServer {
     for try await event in server {
       switch event {
         case .ready:
-          print("* Server is ready")
+          print("* Server is ready. To shutdown: http://localhost:\(server.port)/shutdown/\(shutdownKey)")
         case .networkUnavailable:
           print("* Server reports network unavailable")
-        case .client(let client):
-          accept(client: client)
+        case .request(let request):
+          await handleRequest(request)
       }
     }
   }
@@ -37,60 +40,92 @@ actor EchoServer {
   func stop() async {
     // First we stop the server so that no new connections can be established.
     await server.stop()
-    // Then we close any connected websockets (in parallel).
-    await withTaskGroup(of: Void.self) { group in
-      for connection in connections {
-        group.addTask {
-          await connection.stop(with: .goingAway, reason: "The server is shutting down")
+    // Then we close any connected websockets (in parallel). The loop is necessary in case there were still
+    // requests available in the `WebSocketServer` event queue when the shutdown was initiated.
+    while !connections.isEmpty {
+      await withTaskGroup(of: Void.self) { group in
+        for connection in connections {
+          group.addTask {
+            await connection.stop(with: .goingAway, reason: "The server is shutting down")
+          }
         }
       }
     }
   }
 
-  func accept(client: WebSocketServer.Client) {
-    Task {
-      guard let request = try? await client.request(timeout: 10) else {
+  func handleRequest(_ request: WebSocketServer.Request) async {
+    if request.upgradeRequested {
+      var options = WebSocket.Options()
+      options.maximumIncomingMessageSize = 1024 * 1024
+      guard let socket = await request.upgrade(options: options) else {
         return
       }
+      let id = nextConnectionId
+      nextConnectionId += 1
+      let connection = EchoConnection(with: socket, id: id, endpoint: request.clientEndpoint, server: self)
+      connections.append(connection)
+      await connection.start()
+      print("* Created connection #\(id) for endpoint \(request.clientEndpoint)")
+      return
+    }
 
-      if request.upgradeRequested {
-        var options = WebSocket.Options()
-        options.maximumIncomingMessageSize = 1024 * 1024
-        guard let socket = try? await client.upgrade(options: options) else {
-          return
-        }
-        let connection = EchoConnection(with: socket)
-        connections.append(connection)
-        await connection.start().value
-        if let index = connections.firstIndex(where: { $0 === connection }) {
-          connections.remove(at: index)
-        }
-        return
-      }
+    guard request.method == .get else {
+      await request.respond(with: .badRequest, plainText: "This server supports only GET requests")
+      return
+    }
 
-      guard request.method == .get && request.target == "/stats" else {
-        await client.respond(with: .notFound, plainText: "The requested resource does not exist")
-        return
+    if request.target == "/stats" {
+      var output = "Currently connected clients:\n"
+      if connections.isEmpty {
+        output += "  (none)\n"
+      } else {
+        for connection in connections {
+          output += "  #\(connection.id) from \(connection.endpoint)\n"
+        }
       }
-      await client.respond(with: .ok, plainText: "Number of connected WebSocket clients: \(connections.count)")
+      await request.respond(with: .ok, plainText: output)
+      return
+    }
+
+    if request.target == "/shutdown/\(shutdownKey)" {
+      print("* Shutting down with valid key")
+      await request.respond(with: .ok, plainText: "Shutting down")
+      await stop()
+    }
+
+    await request.respond(with: .notFound, plainText: "The requested resource does not exist")
+  }
+
+  func connectionClosed(_ connection: EchoConnection) {
+    if let index = connections.firstIndex(where: { $0 === connection }) {
+      print("* Connection #\(connection.id) was closed")
+      connections.remove(at: index)
     }
   }
 }
 
 actor EchoConnection {
   let socket: WebSocket
+  let id: UInt64
+  let endpoint: String
+  weak var server: EchoServer?
   var mainTask: Task<Void, Never>?
   var watchdogTask: Task<Void, Never>?
 
-  init(with socket: WebSocket) {
+  init(with socket: WebSocket, id: UInt64, endpoint: String, server: EchoServer) {
     self.socket = socket
+    self.id = id
+    self.endpoint = endpoint
+    self.server = server
   }
 
-  func start() -> Task<Void, Never> {
+  func start() {
+    guard mainTask == nil else {
+      return
+    }
     mainTask = Task {
       await run()
     }
-    return mainTask!
   }
 
   func stop(with code: WebSocket.CloseCode = .goingAway, reason: String = "") async {
@@ -117,6 +152,7 @@ actor EchoConnection {
       }
       watchdogTask?.cancel()
       watchdogTask = nil
+      await server?.connectionClosed(self)
     } catch {
       // Server sockets do not throw.
     }

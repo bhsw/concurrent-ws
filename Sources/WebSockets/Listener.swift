@@ -45,8 +45,8 @@ class Listener: AsyncSequence {
     }
   }
 
-  deinit {
-    print("* Listener deinit")
+  var port: UInt16 {
+    listener?.port?.rawValue ?? 0
   }
 
   func stop() {

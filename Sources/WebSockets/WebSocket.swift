@@ -452,7 +452,7 @@ private extension WebSocket {
       for try await event in connection! {
         switch event {
           case .connect:
-            try await connection!.send(data: handshake.makeRequest(url: url))
+            await connection!.send(data: handshake.makeRequest(url: url))
           case .receive(let data):
             switch try handshake.receive(data: data) {
               case .incomplete:

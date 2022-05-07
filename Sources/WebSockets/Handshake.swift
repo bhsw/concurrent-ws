@@ -6,7 +6,7 @@ import CryptoKit
 
 fileprivate let supportedWebSocketVersion = 13
 fileprivate let protocolUUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-fileprivate let websocketProtocol = ProtocolIdentifier("websocket")
+internal let websocketProtocol = ProtocolIdentifier("websocket")
 
 // MARK: ClientHandshake
 
@@ -26,7 +26,7 @@ internal final class ClientHandshake {
     self.options = options
   }
 
-  func makeRequest(url: URL) throws -> Data {
+  func makeRequest(url: URL) -> Data {
     let key = generateKey()
     expectedKey = sha1(key + protocolUUID)
 
@@ -39,10 +39,7 @@ internal final class ClientHandshake {
     }
     request.addWebSocketVersion(supportedWebSocketVersion)
     request.extraHeaders = options.extraHeaders
-    guard let encoded = request.encode() else {
-      throw WebSocketError.invalidHTTPRequest
-    }
-    return encoded
+    return request.encode()
   }
 
   func receive(data: Data?) throws -> Status {

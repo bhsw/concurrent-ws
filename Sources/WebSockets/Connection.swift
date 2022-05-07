@@ -70,8 +70,22 @@ class Connection: AsyncSequence {
     self.init(with: connection, options: options)
   }
 
-  deinit {
-    print("* connection deinit")
+  var host: String? {
+    switch connection.endpoint {
+      case .hostPort(let host, _):
+        return String(describing: host)
+      default:
+        return nil
+    }
+  }
+
+  var port: UInt16? {
+    switch connection.endpoint {
+      case .hostPort(_, let port):
+        return port.rawValue
+      default:
+        return nil
+    }
   }
 
   @discardableResult
@@ -137,11 +151,11 @@ class Connection: AsyncSequence {
     }
   }
 
-  func finish(throwing error: NWError) {
+  private func finish(throwing error: NWError) {
     continuation.finish(throwing: connectionError(from: error))
   }
 
-  func connectionError(from error: NWError) -> WebSocketError {
+  private func connectionError(from error: NWError) -> WebSocketError {
     switch error {
       case .posix(let code):
         let posixError = POSIXError(code)
