@@ -82,4 +82,18 @@ struct App {
     try await server.run()
 //    try await timer.value
   }
+
+  static func testDumbServer() async throws {
+    let server = WebSocketServer(on: 8080)
+    for try await event in server {
+      switch event {
+        case .ready:
+          print("Ready to accept requests")
+        case .request(let request):
+          await request.respond(with: .ok, plainText: "You performed a \(request.method) on \(request.target)\n")
+        case .networkUnavailable:
+          print("The network is unavailable")
+      }
+    }
+  }
 }

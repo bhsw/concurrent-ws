@@ -66,3 +66,9 @@ public enum HTTPMethod: Equatable, RawRepresentable {
     }
   }
 }
+
+extension HTTPMethod: CustomDebugStringConvertible {
+  public var debugDescription: String {
+    rawValue
+  }
+}

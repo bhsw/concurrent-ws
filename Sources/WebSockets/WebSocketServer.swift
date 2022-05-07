@@ -4,6 +4,29 @@
 import Foundation
 
 /// A simple HTTP 1.1 server that supports upgrading connections to WebSockets.
+///
+/// `WebSocketServer` is a an `AsyncSequence` that allows you to iterate over and react to events that occur on the server, such as incoming
+/// HTTP requests and network status notifications. Each server should have a single, dedicated `Task` that processes events from that server.
+/// However, the rest of the API, such as ``WebSocketServer/stop()`` is designed to be used from any task or thread.
+///
+/// The following is a minimal example that simply responds to any HTTP request with a diagnostic message:
+///
+/// ```swift
+/// let server = WebSocketServer(on: 8080)
+///   for try await event in server {
+///     switch event {
+///       case .ready:
+///         print("Ready to accept requests")
+///       case .request(let request):
+///         await request.respond(with: .ok,
+///           plainText: "\(request.method) on \(request.target)\n")
+///       case .networkUnavailable:
+///         print("The network is unavailable")
+///     }
+///   }
+/// ```
+///
+/// See the `EchoServer` example in the source distribution for a more extensive demonstration of the API.
 public actor WebSocketServer {
   /// Options that can be set for a `WebSocketServer` instance.
   public struct Options {
@@ -29,12 +52,13 @@ public actor WebSocketServer {
 
   private let listener: Listener
   private let options: Options
+  private let eventQueue = EventQueue<Event>()
   private var uncommittedConnections: [Connection] = []
   private var state: State = .initialized
-  private var eventQueue = EventQueue<Event>()
 
   /// Initializes a new `WebSocketServer` that listens on the specified port.
   /// - Parameter port: The port.
+  /// - Parameter options: Server options.
   public init(on port: UInt16, options: Options = Options()) {
     listener = Listener(port: port)
     self.options = options
@@ -47,8 +71,14 @@ public actor WebSocketServer {
 
   /// Stops accepting new connections.
   ///
-  /// This function has no effect on connections that have already been upgraded to websockets. Incoming connections that have not been upgraded to websockets are
-  /// closed without an HTTP response. However, any
+  /// No further events will be added to the queue, and the event iterator will return `nil` once the final event has been consumed.
+  ///
+  /// Incoming connections that have not been upgraded to websockets are closed without an HTTP response. Existing websockets are **not closed**
+  /// by this function; it is up to the individual application to manage the lifespan of its websockets. There may still be `request` events in the queue
+  /// after this function is called, and they can be handled as they normally would be, although the underlying connections will already be closed,
+  /// and responses to those requests will be ignored.
+  ///
+  /// Note that it is not possible to restart a `WebSocketServer`.
   public func stop() {
     guard state == .started else {
       return
@@ -296,7 +326,8 @@ extension WebSocketServer {
 
     /// Upgrades the request's connection to a WebSocket.
     ///
-    /// The request must be a valid WebSocket upgrade request. If it is not, an appropriate HTTP error response is sent, and the connection is closed.
+    /// The request must be a valid WebSocket upgrade request. If it is not, an appropriate HTTP error response will be sent, and the
+    /// connection will be closed.
     /// - Parameter subprotocol: The selected subprotocol. If not `nil`, this must be one of the options from the request's
     ///   ``WebSocketServer/Request/subprotocols``.
     /// - Parameter extraHeaders: Additional headers to include with the HTTP response.

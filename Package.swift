@@ -12,8 +12,8 @@ let package = Package(
       name: "concurrent-websockets",
       targets: ["WebSockets"]),
     .executable(
-      name: "Example",
-      targets: ["Example"])
+      name: "Examples",
+      targets: ["Examples"])
   ],
   dependencies: [
     // Dependencies declare other packages that this package depends on.
@@ -26,7 +26,7 @@ let package = Package(
       name: "WebSockets",
       dependencies: []),
     .executableTarget(
-      name: "Example",
+      name: "Examples",
       dependencies: ["WebSockets"]),
     .testTarget(
       name: "WebSocketsTests",
