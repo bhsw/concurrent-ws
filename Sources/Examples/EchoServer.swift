@@ -53,7 +53,7 @@ actor EchoServer {
     }
   }
 
-  func handleRequest(_ request: WebSocketServer.Request) async {
+  private func handleRequest(_ request: WebSocketServer.Request) async {
     if request.upgradeRequested {
       var options = WebSocket.Options()
       options.maximumIncomingMessageSize = 1024 * 1024
@@ -91,6 +91,7 @@ actor EchoServer {
       print("* Shutting down with valid key")
       await request.respond(with: .ok, plainText: "Shutting down")
       await stop()
+      return
     }
 
     await request.respond(with: .notFound, plainText: "The requested resource does not exist")
