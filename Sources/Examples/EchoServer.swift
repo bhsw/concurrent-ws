@@ -136,10 +136,11 @@ actor EchoConnection {
 
   private func run() async {
     resetWatchdog()
-    await socket.send(text: "Welcome to the echo server.")
     do {
       for try await event in socket {
         switch event {
+          case .open(_):
+            await socket.send(text: "Welcome to the echo server.")
           case .text(let str):
             await socket.send(text: str)
             resetWatchdog()

@@ -196,7 +196,6 @@ public actor WebSocket {
   /// The options that were passed to the initializer.
   public let options: Options
 
-  private let eventQueue = EventQueue<Event>()
   private var connection: Connection?
   private var outputFramer: OutputFramer
   private var inputFramer: InputFramer
@@ -208,7 +207,7 @@ public actor WebSocket {
   private var redirectCount = 0
   private var handshakeTimerTask: Task<Void, Never>?
   private var openingHandshakeDidExpire = false
-  private var didStartServiceTask = false
+  private var handshakeResult: HandshakeResult?
 
   /// Initializes a new `WebSocket` instance.
   ///
@@ -235,11 +234,11 @@ public actor WebSocket {
     self.url = url
     self.options = options
     self.connection = connection
+    self.handshakeResult = handshakeResult
     outputFramer = OutputFramer(forClient: false)
     inputFramer = InputFramer(forClient: false, maximumMessageSize: options.maximumIncomingMessageSize)
     connection.reconfigure(with: options)
-    readyState = .open
-    eventQueue.push(.open(handshakeResult))
+    readyState = .connecting
   }
 
   /// Sends a textual message to the other endpoint.
@@ -378,8 +377,19 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
   /// - Returns: The event, or `nil` if the socket has entered the `closed` state, and no further events will be emitted.
   /// - Throws: ``WebSocketError`` if an error occurs while the socket is in the `connecting` state. Errors are never thrown in any other state.
   public func next() async throws -> Event? {
-    startServiceTask()
-    return try await eventQueue.pop()
+    switch readyState {
+      case .initialized:
+        return try await connect()
+      case .connecting:
+        // We should only ever get here for server-side WebSockets.
+        precondition(handshakeResult != nil)
+        readyState = .open
+        return .open(handshakeResult!)
+      case .open, .closing:
+        return await nextEvent()
+      case .closed:
+        return nil
+    }
   }
 }
 
@@ -396,7 +406,6 @@ private extension WebSocket {
   /// - Parameter frame: The frame.
   /// - Returns: Whether the frame was accepted.
   func send(frame: Frame) async -> Bool {
-    startServiceTask()
     switch readyState {
       case .initialized, .connecting:
         return await withCheckedContinuation { continuation in
@@ -409,43 +418,11 @@ private extension WebSocket {
     }
   }
 
-  /// Starts the service task if it has not already been started.
-  ///
-  /// The service task is responsible for the following:
-  /// * For client-side websockets, connecting and performing the opening handshake.
-  /// * For all websockets, receiving and decoding frames from the connection and posting events to the event queue.
-  func startServiceTask() {
-    guard !didStartServiceTask else {
-      return
-    }
-    didStartServiceTask = true
-    Task {
-      // Server side sockets will already be in the `open` state.
-      if readyState == .initialized {
-        do {
-          guard let openEvent = try await connect() else {
-            eventQueue.finish()
-            return
-          }
-          eventQueue.push(openEvent)
-        } catch {
-          eventQueue.finish(throwing: error)
-          return
-        }
-      }
-
-      while let event = await nextEvent() {
-        eventQueue.push(event)
-      }
-      eventQueue.finish()
-    }
-  }
-
   /// Performs the opening HTTP handshake.
   /// - Returns: The `open` event, or `nil` if the connection was closed prior to the handshake completing.
   /// - Throws: ``WebSocketError`` if the handshake fails.
   func connect() async throws -> Event? {
-    precondition(readyState == .connecting)
+    precondition(readyState == .initialized || readyState == .connecting)
     guard let scheme = url.scheme?.lowercased(), let host = url.host else {
       throw WebSocketError.invalidURL(url)
     }
@@ -481,6 +458,7 @@ private extension WebSocket {
               case .incomplete:
                 continue
               case .ready(result: let result, unconsumed: let unconsumed):
+                handshakeResult = result
                 cancelHandshakeTimer()
                 inputFramer.push(unconsumed)
                 readyState = .open
@@ -535,9 +513,7 @@ private extension WebSocket {
   /// Services the underlying connection and returns the next event.
   /// - Returns: The event.
   func nextEvent() async -> Event? {
-    guard readyState == .open || readyState == .closing else {
-      return nil
-    }
+    precondition(readyState == .open || readyState == .closing)
     do {
       if let event = await checkForInputFrame() {
         return event
