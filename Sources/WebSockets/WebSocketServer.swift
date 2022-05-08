@@ -57,14 +57,16 @@ public actor WebSocketServer {
   private var state: State = .initialized
 
   /// Initializes a new `WebSocketServer` that listens on the specified port.
-  /// - Parameter port: The port.
+  /// - Parameter port: The port. If `0`, an unused one will be assigned by the system.
   /// - Parameter options: Server options.
-  public init(on port: UInt16, options: Options = Options()) {
+  public init(on port: UInt16 = 0, options: Options = Options()) {
     listener = Listener(port: port)
     self.options = options
   }
 
   /// The port on which the server accepts connections.
+  ///
+  /// If the server has been asked to assign an unused port, the value of this property will be `0` until the `ready` event has been emitted.
   public nonisolated var port: UInt16 {
     listener.port
   }
