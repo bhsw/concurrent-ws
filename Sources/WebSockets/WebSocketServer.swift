@@ -267,6 +267,19 @@ extension WebSocketServer {
       self.server = server
     }
 
+    deinit {
+      // Ensure that we don't leak the  connection if a request gets dropped without sending a
+      // response or upgrading to a WebSocket.
+      if let server = server {
+        let connection = connection
+        Task.detached {
+          if (await server.removeUncommitted(connection: connection)) {
+            connection.close()
+          }
+        }
+      }
+    }
+
     /// Sends an ordinary HTTP response to the request.
     ///
     /// If a response has already been sent, or the connection has been upgraded to a WebSocket, this function has no effect.
@@ -276,6 +289,7 @@ extension WebSocketServer {
         // An attempt was already made to respond to the request.
         return
       }
+      self.server = nil             // Not strictly necessary but eliminates work in the deinitializer
       var message = HTTPMessage(status: response.status, reason: response.status.description)
       if response.status.kind == .redirection, let location = response.location {
         message.location = location
@@ -340,6 +354,7 @@ extension WebSocketServer {
         // An attempt was already made to respond to the request.
         return nil
       }
+      self.server = nil             // Not strictly necessary but eliminates work in the deinitializer
 
       let response = makeServerHandshakeResponse(to: message, subprotocol: subprotocol, extraHeaders: extraHeaders)
       guard await connection.send(data: response.encode()),
