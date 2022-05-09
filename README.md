@@ -19,7 +19,7 @@ is subject to change at any time.
   * Automatic ping response
 * A simple HTTP 1.1 server with the ability to upgrade connections to WebSockets
 * A fully documented public API
-* 100% Swift with no unsafe code
+* 100% Swift using actors to protect mutable state
 * Uses the platform's `Network` framework for communication (TCP/IP and TLS layers only)
 * No third-party dependencies
 * MIT License

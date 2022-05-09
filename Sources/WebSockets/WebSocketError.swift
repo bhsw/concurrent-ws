@@ -54,7 +54,7 @@ public enum WebSocketError: Error {
   case timeout
 
   /// The redirect limit was exceeded. This usually indicates a redirect loop.
-  case maxRedirectsExceeded
+  case maximumRedirectsExceeded
 
   /// The redirect location was not a valid URL or relative URL.
   case invalidRedirectLocation(String)

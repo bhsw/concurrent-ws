@@ -21,7 +21,7 @@ class WebSocketTests: XCTestCase {
         await server.stop()
       }
     }
-    let url = try await server.start()
+    let url = try await server.start(path: "/test")
     try await randomPingTest(url: url)
   }
 
@@ -37,7 +37,7 @@ class WebSocketTests: XCTestCase {
       }
     }
     let sizes = [ 0, 1, 16, 64, 125, 126, 127, 128, 65535, 65536, 65537, 999_999 ]
-    let url = try await server.start()
+    let url = try await server.start(path: "/test")
     try await randomDataTest(url: url, sizes: sizes)
   }
 
@@ -56,7 +56,7 @@ class WebSocketTests: XCTestCase {
 
     var options = WebSocket.Options()
     options.subprotocols = [ "first", "second", "third" ]
-    let socket = WebSocket(url: try await server.start(), options: options)
+    let socket = WebSocket(url: try await server.start(path: "/test"), options: options)
     await socket.send(text: "Hello")
     await socket.close()
     var closed = false
@@ -84,7 +84,7 @@ class WebSocketTests: XCTestCase {
 
     var options = WebSocket.Options()
     options.subprotocols = [ "first", "second", "third" ]
-    let socket = WebSocket(url: try await server.start(), options: options)
+    let socket = WebSocket(url: try await server.start(path: "/test"), options: options)
     await socket.send(text: "Hello")
     await socket.close()
     var closed = false
@@ -102,7 +102,6 @@ class WebSocketTests: XCTestCase {
     XCTAssert(closed)
   }
 
-
   func testUnexpectedSubprotocol() async throws {
     let server = TestServer(subprotocol: "nope")
     defer {
@@ -111,7 +110,7 @@ class WebSocketTests: XCTestCase {
       }
     }
 
-    let socket = WebSocket(url: try await server.start())
+    let socket = WebSocket(url: try await server.start(path: "/test"))
     await socket.send(text: "Hello")
     await socket.close()
     do {
@@ -120,6 +119,23 @@ class WebSocketTests: XCTestCase {
       XCTFail("Expected an exception ")
     } catch WebSocketError.subprotocolMismatch {
     }
+  }
+
+  func testRedirect() async throws {
+    let server = TestServer(subprotocol: nil)
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+
+    let socket = WebSocket(url: try await server.start(path: "/redirect"))
+    await socket.send(text: "Hello")
+    await socket.close()
+    for try await _ in socket {
+    }
+    let path = await socket.url.path
+    XCTAssertEqual(path, "/test")
   }
 
   func testJustClosingNeverOpens() async throws {
@@ -253,7 +269,7 @@ class WebSocketTests: XCTestCase {
       for try await _ in socket {
       }
       XCTFail("Expected an exception ")
-    } catch WebSocketError.maxRedirectsExceeded {
+    } catch WebSocketError.maximumRedirectsExceeded {
     }
   }
 

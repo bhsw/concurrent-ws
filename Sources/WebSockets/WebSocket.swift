@@ -487,7 +487,7 @@ private extension WebSocket {
                   return .open(result)
                 case .redirect(let location):
                   guard redirectCount < options.maximumRedirects else {
-                    throw WebSocketError.maxRedirectsExceeded
+                    throw WebSocketError.maximumRedirectsExceeded
                   }
                   guard let newURL = URL(string: location, relativeTo: url) else {
                     throw WebSocketError.invalidRedirectLocation(location)

@@ -52,13 +52,17 @@ actor TestServer {
       switch request.target {
         case "/404":
           await request.respond(with: .notFound, plainText: "Resource not found")
+        case "/redirect":
+          await request.redirect(to: "/test")
         case "/redirect-loop":
           await request.redirect(to: "/redirect-loop")
-        default:
+        case "/test":
           guard let socket = await request.upgrade(subprotocol: subprotocol) else {
             return
           }
           handleSocket(socket)
+        default:
+          await request.respond(with: .notFound, plainText: "The specified resource was not found")
       }
       return
     }
