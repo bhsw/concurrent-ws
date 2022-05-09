@@ -9,8 +9,8 @@ struct App {
   static func main() async {
     do {
 //      try await testClient()
-//      try await testSimpleClient()
-      try await testServer()
+      try await testSimpleClient()
+//      try await testServer()
     } catch {
       print("ERROR:", error)
     }
@@ -54,12 +54,21 @@ struct App {
 
   static func testSimpleClient() async throws {
     let socket = WebSocket(url: URL(string: "wss://echo.websocket.events")!)
+    Task {
+      for index in 1...10 {
+        print("Sending #\(index)")
+        await socket.send(text: "Hello, world #\(index)")
+      }
+      print("Closing")
+      await socket.close(with: .goingAway)
+    }
+    try await Task.sleep(nanoseconds: 100_000_000)
+    print("Entering event loop")
     do {
       for try await event in socket {
         switch event {
           case .open(_):
             print("Successfully opened the WebSocket")
-            await socket.send(text: "Hello, world")
           case .text(let str):
             print("Received text: \(str)")
           case .close(code: let code, reason: _, wasClean: _):

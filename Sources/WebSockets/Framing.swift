@@ -74,26 +74,22 @@ internal enum PolicyViolation: Error, CustomDebugStringConvertible {
 
 internal struct OutputFramer {
   private let isClient: Bool
-  private var output: Data? = nil
 
   init(forClient isClient: Bool) {
     self.isClient = isClient
   }
 
-  mutating func push(_ frame: Frame) -> Bool {
+  mutating func encode(_ frame: Frame) -> Data {
     let key: UInt32? = isClient ? UInt32.random(in: 1..<UInt32.max) : nil
     switch frame {
       case .text(let text):
-        let data = [UInt8](text.utf8)
-        push(opcode: .text, payload: data, using: key)
+        return encode(as: .text, payload: text.utf8, using: key)
       case .binary(let data):
-        push(opcode: .binary, payload: data, using: key)
+        return encode(as: .binary, payload: data, using: key)
       case .close(let code, let reason):
         var data = Data()
         data.appendBigEndian(code.rawValue)
-        guard var reasonBytes = reason.data(using: .utf8) else {
-          return false
-        }
+        var reasonBytes = reason.data(using: .utf8)!
         if reasonBytes.count > maxCloseReasonSize {
           // Truncate the UTF-8 data if it exceeds the space available.
           reasonBytes.removeSubrange(maxCloseReasonSize...)
@@ -103,55 +99,41 @@ internal struct OutputFramer {
           }
         }
         data.append(reasonBytes)
-        push(opcode: .close, payload: data, using: key)
+        return encode(as: .close, payload: data, using: key)
       case .ping(let data):
-        guard data.count <= maxControlPayloadSize else {
-          return false
-        }
-        push(opcode: .ping, payload: data, using: key)
+        return encode(as: .ping, payload: data.count <= maxControlPayloadSize ? data : data[0..<maxControlPayloadSize], using: key)
       case .pong(let data):
-        guard data.count <= maxControlPayloadSize else {
-          return false
-        }
-        push(opcode: .pong, payload: data, using: key)
+        return encode(as: .pong, payload: data.count <= maxControlPayloadSize ? data : data[0..<maxControlPayloadSize], using: key)
       default:
-        return false
+        // The other frame types are errors emitted by the input framer; they cannot be encoded.
+        preconditionFailure()
     }
-    return true
   }
 
-  mutating func pop() -> Data? {
-    let result = output
-    output = nil
-    return result
-  }
-
-  mutating func reset() {
-    output = nil
-  }
-
-  private mutating func push<T : Collection>(opcode: Opcode, payload: T, using maskKey: UInt32? = nil, fin: Bool = true) where T.Element == UInt8 {
-    if (output == nil) {
-      output = Data(capacity: payload.count + maxHeaderSize)
-    }
-    output!.append((opcode.rawValue & 0xf) | (fin ? 0x80 : 0))
+  private mutating func encode<T : Collection>(as opcode: Opcode,
+                                               payload: T,
+                                               using maskKey: UInt32? = nil,
+                                               fin: Bool = true) -> Data where T.Element == UInt8 {
+    var output = Data(capacity: maxHeaderSize + payload.count)
+    output.append((opcode.rawValue & 0xf) | (fin ? 0x80 : 0))
     let maskBit: UInt8 = maskKey != nil ? 0x80 : 0
     switch payload.count {
       case 0...125:
-        output!.append(UInt8(payload.count) | maskBit)
+        output.append(UInt8(payload.count) | maskBit)
       case 126...65535:
-        output!.append(126 | maskBit)
-        output!.appendBigEndian(UInt16(payload.count))
+        output.append(126 | maskBit)
+        output.appendBigEndian(UInt16(payload.count))
       default:
-        output!.append(127 | maskBit)
-        output!.appendBigEndian(UInt64(payload.count))
+        output.append(127 | maskBit)
+        output.appendBigEndian(UInt64(payload.count))
     }
     if let key = maskKey {
-      output!.appendBigEndian(key)
-      output!.append(payload, usingMask: key)
+      output.appendBigEndian(key)
+      output.append(payload, usingMask: key)
     } else {
-      output!.append(contentsOf: payload)
+      output.append(contentsOf: payload)
     }
+    return output
   }
 }
 

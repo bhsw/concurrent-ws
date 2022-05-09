@@ -41,13 +41,12 @@ class WebSocketTests: XCTestCase {
     let expected = sizes.map { randomData(size: $0) }
     var received: [Data] = []
     var receivedClose = false
+    for data in expected {
+      await socket.send(data: data)
+    }
+    await socket.close()
     for try await event in socket {
       switch event {
-        case .open(_):
-          for data in expected {
-            await socket.send(data: data)
-          }
-          await socket.close()
         case .binary(let data):
           received.append(data)
         case .close(code: _, reason: _, wasClean: let wasClean):

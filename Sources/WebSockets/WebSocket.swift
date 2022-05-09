@@ -203,11 +203,11 @@ public actor WebSocket {
   private var didReceiveCloseFrame = false
   private var pendingCloseCode: CloseCode?
   private var pendingCloseReason: String?
-  private var parkedSends: [ParkedSend] = []
   private var redirectCount = 0
   private var handshakeTimerTask: Task<Void, Never>?
   private var openingHandshakeDidExpire = false
-  private var handshakeResult: HandshakeResult?
+  private var pendingOpen: Result<Event?, Error>?
+  private var parkedUntilOpen: [CheckedContinuation<Void, Never>] = []
 
   /// Initializes a new `WebSocket` instance.
   ///
@@ -234,11 +234,11 @@ public actor WebSocket {
     self.url = url
     self.options = options
     self.connection = connection
-    self.handshakeResult = handshakeResult
     outputFramer = OutputFramer(forClient: false)
     inputFramer = InputFramer(forClient: false, maximumMessageSize: options.maximumIncomingMessageSize)
     connection.reconfigure(with: options)
-    readyState = .connecting
+    pendingOpen = .success(.open(handshakeResult))
+    readyState = .open
   }
 
   /// Sends a textual message to the other endpoint.
@@ -289,7 +289,8 @@ public actor WebSocket {
   ///   to the event reader.
   ///
   /// If this function is called before a connection has been established, the frame will be queued and sent when the socket reaches the `open` state.
-  /// - Parameter data: Any arbitrary data to include with the frame. The WebSocket protocol limits the size of this data to 125 bytes.
+  /// - Parameter data: Any arbitrary data to include with the frame. The WebSocket protocol limits the size of this data to 125 bytes. If the
+  ///   specified data exceeds the limit, only the first 125 bytes are sent.
   /// - Returns: Whether the frame was successfully submitted for transmission.
   @discardableResult
   public func ping(data: Data) async -> Bool {
@@ -308,7 +309,8 @@ public actor WebSocket {
   ///   to the event reader.
   ///
   /// If this function is called before a connection has been established, the frame will be queued and sent when the socket reaches the `open` state.
-  /// - Parameter data: Any arbitrary data to include with the frame. The WebSocket protocol limits the size of this data to 125 bytes.
+  /// - Parameter data: Any arbitrary data to include with the frame. The WebSocket protocol limits the size of this data to 125 bytes. If the
+  ///   specified data exceeds the limit, only the first 125 bytes are sent.
   /// - Returns: Whether the frame was successfully submitted for transmission.
   @discardableResult
   public func pong(data: Data) async -> Bool {
@@ -320,17 +322,17 @@ public actor WebSocket {
   /// The behavior of this function depends on the ready state of the socket:
   ///
   /// * If `initialized`, the socket will immediately enter the `closed` state, and the event sequence will finish without producing any events.
-  /// * If `connecting`, the underlying connection will be canceled, the socket will immediately enter the `closed` state, and the event sequence
-  ///   will finish without producing any events.
+  /// * If `connecting`, the task will suspend until the opening handshake completes. If the handshake is successful, processing will resume
+  ///   according to the logic discussed for the `open` state below. If the handshake fails, the underlying connection will be canceled, the
+  ///   socket will enter the `closed`state, and the event sequence will finish with an error.
   /// * If `open`, the socket will immediately enter the `closing` state, and a `close` frame will be sent to the other endpoint. Once a `close`
   ///   frame is received from the other endpoint, or if the configured `closingHandshakeTimeout` expires prior to receiving a response,
   ///   the underlying connection will be closed, and the socket will enter the `closed` state. In every case, a `close` event will be added to
   ///   the socket's event sequence as the final event.
   /// * If `closing` or `closed`, this function has no effect.
   ///
-  /// It is important to keep in mind that this function returns immediately; it does not wait for the socket to finish closing. That effect can be
-  /// achieved by calling this function and then `await`ing the result of the `Task` that is processing events emitted by the socket.
-  ///
+  /// It is important to keep in mind that this function does not wait for the socket to finish closing. That effect can be achieved by calling this function
+  /// and then `await`ing the result of the `Task` that is processing events emitted by the socket.
   /// - Parameters:
   ///   - code: The close code. Note that any restricted close codes are silently converted to `.normalClosure`.
   ///   - reason: The reason. The WebSocket protocol limits the reason to 123 UTF-8 code units. If this limit is exceeded, the reason will be truncated
@@ -340,13 +342,13 @@ public actor WebSocket {
       case .initialized:
         readyState = .closed
       case .connecting:
-        readyState = .closed
-        connection!.close()
+        await finishOpeningHandshake()
+        await close(with: code, reason: reason)
       case .open:
         readyState = .closing
         pendingCloseCode = code.isRestricted ? .normalClosure : code
         pendingCloseReason = reason
-        if (await sendNow(frame: .close(pendingCloseCode!, reason))) {
+        if await connection!.send(data: outputFramer.encode(.close(pendingCloseCode!, reason))) {
           didSendCloseFrame = true
         }
         handshakeTimerTask = Task(priority: TaskPriority.low) {
@@ -381,11 +383,21 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
       case .initialized:
         return try await connect()
       case .connecting:
-        // We should only ever get here for server-side WebSockets.
-        precondition(handshakeResult != nil)
-        readyState = .open
-        return .open(handshakeResult!)
+        // If we get here, it indicates that the application called `send()` on a different task before we started
+        // iterating over events. We therefore have to suspend until the opening handshake triggered by that send
+        // is complete.
+        await finishOpeningHandshake()
+        return try await next()
       case .open, .closing:
+        if let result = pendingOpen {
+          pendingOpen = nil
+          switch result {
+            case .success(let event):
+              return event
+            case .failure(let error):
+              throw error
+          }
+        }
         return await nextEvent()
       case .closed:
         return nil
@@ -396,23 +408,28 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
 // MARK: Private implementation
 
 private extension WebSocket {
-  /// A frame that was submitted to send prior to the socket entering the `open` state.
-  struct ParkedSend {
-    let frame: Frame
-    let continuation: CheckedContinuation<Bool, Never>
-  }
-
   /// Sends a frame or parks it for delivery once the connection enters the `open` state.
   /// - Parameter frame: The frame.
   /// - Returns: Whether the frame was accepted.
   func send(frame: Frame) async -> Bool {
     switch readyState {
-      case .initialized, .connecting:
-        return await withCheckedContinuation { continuation in
-          parkedSends.append(.init(frame: frame, continuation: continuation))
+      case .initialized:
+        // This is the first send request, and the application hasn't started consuming events yet, which means we're
+        // responsible for performing the connect and opening handshake. First, however, reserve our spot in line
+        // in case another write happens when this task suspends during the handshake.
+        async let result: Void = await finishOpeningHandshake()
+        do {
+          pendingOpen = .success(try await connect())
+        } catch {
+          pendingOpen = .failure(error)
         }
+        await result
+        return await send(frame: frame)
+      case .connecting:
+        await finishOpeningHandshake()
+        return await send(frame: frame)
       case .open:
-        return await sendNow(frame: frame)
+        return await connection!.send(data: outputFramer.encode(frame))
       case .closing, .closed:
         return false
     }
@@ -458,15 +475,10 @@ private extension WebSocket {
               case .incomplete:
                 continue
               case .ready(result: let result, unconsumed: let unconsumed):
-                handshakeResult = result
                 cancelHandshakeTimer()
                 inputFramer.push(unconsumed)
                 readyState = .open
-                for parked in parkedSends {
-                  let result = await sendNow(frame: parked.frame)
-                  parked.continuation.resume(returning: result)
-                }
-                parkedSends.removeAll()
+                await resumeTasksWaitingForOpen()
                 return .open(result)
               case .redirect(let location):
                 guard redirectCount < options.maximumRedirects else {
@@ -497,10 +509,7 @@ private extension WebSocket {
       }
       connection = nil
       readyState = .closed
-      for parked in parkedSends {
-        parked.continuation.resume(returning: false)
-      }
-      parkedSends.removeAll()
+      await resumeTasksWaitingForOpen()
       if (suppressError) {
         return nil
       }
@@ -568,12 +577,12 @@ private extension WebSocket {
           pendingCloseCode = code;
           pendingCloseReason = reason
           readyState = .closing
-          await sendNow(frame: .close(code, reason))
+          await connection!.send(data: outputFramer.encode(.close(code, reason)))
         }
         return finishClose()
       case .ping(let data):
         if (options.automaticallyRespondToPings) {
-          await sendNow(frame: .pong(data))
+          await connection!.send(data: outputFramer.encode(.pong(data)))
         }
         return .ping(data)
       case .pong(let data):
@@ -583,6 +592,23 @@ private extension WebSocket {
       case .policyViolation(let error):
         return await abortConnection(with: .policyViolation, reason: error.debugDescription)
     }
+  }
+
+  /// Suspends the current task until the opening handshake has completed.
+  func finishOpeningHandshake() async {
+    precondition(readyState == .initialized || readyState == .connecting)
+    return await withCheckedContinuation { continuation in
+      parkedUntilOpen.append(continuation)
+    }
+  }
+
+  /// Resumes tasks that are waiting for the opening handshake to complete.
+  func resumeTasksWaitingForOpen() async {
+    precondition(readyState != .initialized && readyState != .connecting)
+    for continuation in parkedUntilOpen {
+      continuation.resume()
+    }
+    parkedUntilOpen.removeAll()
   }
 
   /// Terminates the connection without performing a closing handshake.
@@ -595,7 +621,7 @@ private extension WebSocket {
     pendingCloseCode = code
     pendingCloseReason = reason
     readyState = .closing
-    await sendNow(frame: .close(code, reason))
+    await connection!.send(data: outputFramer.encode(.close(code, reason)))
     return finishClose()
   }
 
@@ -610,17 +636,6 @@ private extension WebSocket {
     return .close(code: pendingCloseCode ?? .abnormalClosure,
                   reason: pendingCloseReason ?? "The endpoint disconnected unexpectedly",
                   wasClean: didSendCloseFrame && didReceiveCloseFrame)
-  }
-
-  /// Sends a frame through the output framer and directly to the underlying connection.
-  /// - Returns: Whether the frame was successfully sent.
-  @discardableResult
-  func sendNow(frame: Frame) async -> Bool {
-    precondition(readyState == .open || readyState == .closing)
-    guard outputFramer.push(frame) else {
-      return false
-    }
-    return await connection!.send(data: outputFramer.pop()!)
   }
 
   /// Cancels the handshake timer if it is running.

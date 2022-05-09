@@ -4,6 +4,8 @@
 import Foundation
 
 func randomData(size: Int) -> Data {
+  // It's much faster for larger sizes to set up an array first and then initialize a `Data` instance.
+  // For some reason, subscripting and appending to data is very slow compared to a UInt8 array.
   var bytes: [UInt8] = []
   bytes.reserveCapacity(size)
   var index = 0
