@@ -210,7 +210,7 @@ public actor WebSocket {
 
   /// Initializes a new `WebSocket` instance.
   ///
-  /// Note that the connection will not be attempted until a task requests the first event from the sequence.
+  /// Note that the connection will not be attempted until a message is sent or a task requests the first event from the sequence.
   ///
   /// - Parameter url: The URL of the endpoint to which to connect. The scheme must be `ws` or `wss`.
   /// - Parameter options: The options.
@@ -283,7 +283,6 @@ public actor WebSocket {
   /// several different reasons:
   ///
   /// * The connection has reached the `closing` or `closed` state.
-  /// * The given `data` exceeds the maximum length allowed.
   /// * An error occurred while submitting the frame. Any such error is always fatal to the connection and is therefore reported via a `close` event
   ///   to the event reader.
   ///
@@ -303,7 +302,6 @@ public actor WebSocket {
   /// several different reasons:
   ///
   /// * The connection has reached the `closing` or `closed` state.
-  /// * The given `data` exceeds the maximum length allowed.
   /// * An error occurred while submitting the frame. Any such error is always fatal to the connection and is therefore reported via a `close` event
   ///   to the event reader.
   ///
