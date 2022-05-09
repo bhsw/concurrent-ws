@@ -1,22 +1,29 @@
 # concurrent-websockets
 
 An implementation of WebSockets ([RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455)) for Swift 5.5 and above,
-featuring an API based on Swift Concurrency (tasks and async/await).
+featuring an API based on Swift Concurrency (tasks and async/await). The minimum supported platforms are macOS 10.15+
+(Catalina) and iOS 15+.
 
-This library is written entirely in Swift and has no dependencies other than platform frameworks `Foundation`, `Network`,
-and `CryptoKit`.
-
-**IMPORTANT**: This software should be considered alpha-quality at this time. Tests are missing, and the API is subject
-to change at any time.
+**IMPORTANT**: This software should be considered alpha-quality at this time. Tests are still being added, and the API
+is subject to change at any time.
 
 
 ## Features
 
-* A fully documented public API.
-* Supports both `ws` (unencrypted) and `wss` (TLS) URL schemes.
-* Many tunable options, such as maximum incoming message length, HTTP redirect behavior, custom HTTP headers, and
-  timeouts for the opening and closing handshakes.
-* A simple HTTP 1.1 server with the ability to upgrade connections to WebSockets.
+* Supports both `ws` (unencrypted) and `wss` (TLS) URL schemes
+* Many tunable options, including:
+  * Maximum incoming message length
+  * HTTP redirect behavior
+  * Custom HTTP headers
+  * Timeouts for the opening and closing handshakes
+  * Automatic ping response
+* A simple HTTP 1.1 server with the ability to upgrade connections to WebSockets
+* A fully documented public API
+* 100% Swift with no unsafe code
+* Uses the platform's `Network` framework for communication (TCP/IP and TLS layers only)
+* No third-party dependencies
+* MIT License
+
 
 ## Not Currently Supported
 

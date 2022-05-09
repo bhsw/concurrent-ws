@@ -151,6 +151,8 @@ private extension HTTPMessage {
         upgrade += value.split(separator: ",").map { ProtocolIdentifier($0.trimmingCharacters(in: .whitespaces)) }
       case "connection":
         connection += value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+      case "location":
+        location = value
       case "sec-websocket-key":
         webSocketKey = value
       case "sec-websocket-protocol":

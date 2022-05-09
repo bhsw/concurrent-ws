@@ -203,7 +203,6 @@ public actor WebSocket {
   private var didReceiveCloseFrame = false
   private var pendingCloseCode: CloseCode?
   private var pendingCloseReason: String?
-  private var redirectCount = 0
   private var handshakeTimerTask: Task<Void, Never>?
   private var openingHandshakeDidExpire = false
   private var pendingOpen: Result<Event?, Error>?
@@ -439,87 +438,90 @@ private extension WebSocket {
   /// - Returns: The `open` event, or `nil` if the connection was closed prior to the handshake completing.
   /// - Throws: ``WebSocketError`` if the handshake fails.
   func connect() async throws -> Event? {
-    precondition(readyState == .initialized || readyState == .connecting)
-    guard let scheme = url.scheme?.lowercased(), let host = url.host else {
-      readyState = .closed
-      resumeTasksWaitingForOpen()
-      throw WebSocketError.invalidURL(url)
-    }
-    guard scheme == "ws" || scheme == "wss" else {
-      readyState = .closed
-      resumeTasksWaitingForOpen()
-      throw WebSocketError.invalidURLScheme(scheme)
-    }
+    precondition(readyState == .initialized)
+    var redirectCount = 0
+  redirect: while true {
+      guard let scheme = url.scheme?.lowercased(), let host = url.host else {
+        readyState = .closed
+        resumeTasksWaitingForOpen()
+        throw WebSocketError.invalidURL(url)
+      }
+      guard scheme == "ws" || scheme == "wss" else {
+        readyState = .closed
+        resumeTasksWaitingForOpen()
+        throw WebSocketError.invalidURLScheme(scheme)
+      }
 
-    readyState = .connecting
-    if (handshakeTimerTask == nil) {
-      // When a redirect has occured, the handshake timer will already be running.
-      handshakeTimerTask = Task(priority: TaskPriority.low) {
-        do {
-          try await Task.sleep(nanoseconds: UInt64(options.openingHandshakeTimeout * 1_000_000_000))
-          openingHandshakeDidExpire = true
-          connection?.close()
-          readyState = .closed
-        } catch {
+      readyState = .connecting
+      if (handshakeTimerTask == nil) {
+        // When a redirect has occured, the handshake timer will already be running.
+        handshakeTimerTask = Task(priority: TaskPriority.low) {
+          do {
+            try await Task.sleep(nanoseconds: UInt64(options.openingHandshakeTimeout * 1_000_000_000))
+            openingHandshakeDidExpire = true
+            connection?.close()
+            readyState = .closed
+          } catch {
+          }
         }
       }
-    }
 
-    let useTLS = scheme == "wss"
-    let port = UInt16(url.port ?? (useTLS ? 443 : 80))
-    connection = Connection(host: host, port: port, tls: useTLS, options: options)
-    let handshake = ClientHandshake(options: options)
-    do {
-      for try await event in connection! {
-        switch event {
-          case .connect:
-            await connection!.send(data: handshake.makeRequest(url: url))
-          case .receive(let data):
-            switch try handshake.receive(data: data) {
-              case .incomplete:
-                continue
-              case .ready(result: let result, unconsumed: let unconsumed):
-                cancelHandshakeTimer()
-                inputFramer.push(unconsumed)
-                readyState = .open
-                resumeTasksWaitingForOpen()
-                return .open(result)
-              case .redirect(let location):
-                guard redirectCount < options.maximumRedirects else {
-                  throw WebSocketError.maxRedirectsExceeded
-                }
-                guard let newURL = URL(string: location, relativeTo: url) else {
-                  throw WebSocketError.invalidRedirectLocation(location)
-                }
-                redirectCount += 1
-                connection!.close()
-                connection = nil
-                self.url = newURL
-                return try await connect()
-            }
-          default:
-            continue
+      let useTLS = scheme == "wss"
+      let port = UInt16(url.port ?? (useTLS ? 443 : 80))
+      connection = Connection(host: host, port: port, tls: useTLS, options: options)
+      let handshake = ClientHandshake(options: options)
+      do {
+        for try await event in connection! {
+          switch event {
+            case .connect:
+              await connection!.send(data: handshake.makeRequest(url: url))
+            case .receive(let data):
+              switch try handshake.receive(data: data) {
+                case .incomplete:
+                  continue
+                case .ready(result: let result, unconsumed: let unconsumed):
+                  cancelHandshakeTimer()
+                  inputFramer.push(unconsumed)
+                  readyState = .open
+                  resumeTasksWaitingForOpen()
+                  return .open(result)
+                case .redirect(let location):
+                  guard redirectCount < options.maximumRedirects else {
+                    throw WebSocketError.maxRedirectsExceeded
+                  }
+                  guard let newURL = URL(string: location, relativeTo: url) else {
+                    throw WebSocketError.invalidRedirectLocation(location)
+                  }
+                  redirectCount += 1
+                  connection!.close()
+                  connection = nil
+                  self.url = newURL
+                  continue redirect
+              }
+            default:
+              continue
+          }
         }
+        if openingHandshakeDidExpire {
+          throw WebSocketError.timeout
+        }
+        throw WebSocketError.unexpectedDisconnect
+      } catch let error as WebSocketError {
+        cancelHandshakeTimer()
+        let suppressError = readyState == .closed && !openingHandshakeDidExpire
+        if readyState != .closed {
+          connection!.close()
+        }
+        connection = nil
+        readyState = .closed
+        resumeTasksWaitingForOpen()
+        if (suppressError) {
+          return nil
+        }
+        throw error
+      } catch {
+        fatalError("Connection is only allowed to throw WebSocketError")
       }
-      if openingHandshakeDidExpire {
-        throw WebSocketError.timeout
-      }
-      throw WebSocketError.unexpectedDisconnect
-    } catch let error as WebSocketError {
-      cancelHandshakeTimer()
-      let suppressError = readyState == .closed && !openingHandshakeDidExpire
-      if readyState != .closed {
-        connection!.close()
-      }
-      connection = nil
-      readyState = .closed
-      resumeTasksWaitingForOpen()
-      if (suppressError) {
-        return nil
-      }
-      throw error
-    } catch {
-      fatalError("Connection is only allowed to throw WebSocketError")
     }
   }
 
