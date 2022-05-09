@@ -379,6 +379,15 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
   /// - Returns: The event, or `nil` if the socket has entered the `closed` state, and no further events will be emitted.
   /// - Throws: ``WebSocketError`` if an error occurs while the socket is in the `connecting` state. Errors are never thrown in any other state.
   public func next() async throws -> Event? {
+    if let result = pendingOpen {
+      pendingOpen = nil
+      switch result {
+        case .success(let event):
+          return event
+        case .failure(let error):
+          throw error
+      }
+    }
     switch readyState {
       case .initialized:
         return try await connect()
@@ -389,15 +398,6 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
         await finishOpeningHandshake()
         return try await next()
       case .open, .closing:
-        if let result = pendingOpen {
-          pendingOpen = nil
-          switch result {
-            case .success(let event):
-              return event
-            case .failure(let error):
-              throw error
-          }
-        }
         return await nextEvent()
       case .closed:
         return nil
@@ -441,9 +441,13 @@ private extension WebSocket {
   func connect() async throws -> Event? {
     precondition(readyState == .initialized || readyState == .connecting)
     guard let scheme = url.scheme?.lowercased(), let host = url.host else {
+      readyState = .closed
+      resumeTasksWaitingForOpen()
       throw WebSocketError.invalidURL(url)
     }
     guard scheme == "ws" || scheme == "wss" else {
+      readyState = .closed
+      resumeTasksWaitingForOpen()
       throw WebSocketError.invalidURLScheme(scheme)
     }
 
@@ -478,7 +482,7 @@ private extension WebSocket {
                 cancelHandshakeTimer()
                 inputFramer.push(unconsumed)
                 readyState = .open
-                await resumeTasksWaitingForOpen()
+                resumeTasksWaitingForOpen()
                 return .open(result)
               case .redirect(let location):
                 guard redirectCount < options.maximumRedirects else {
@@ -509,7 +513,7 @@ private extension WebSocket {
       }
       connection = nil
       readyState = .closed
-      await resumeTasksWaitingForOpen()
+      resumeTasksWaitingForOpen()
       if (suppressError) {
         return nil
       }
@@ -596,14 +600,16 @@ private extension WebSocket {
 
   /// Suspends the current task until the opening handshake has completed.
   func finishOpeningHandshake() async {
-    precondition(readyState == .initialized || readyState == .connecting)
+    guard readyState == .initialized || readyState == .connecting else {
+      return
+    }
     return await withCheckedContinuation { continuation in
       parkedUntilOpen.append(continuation)
     }
   }
 
   /// Resumes tasks that are waiting for the opening handshake to complete.
-  func resumeTasksWaitingForOpen() async {
+  func resumeTasksWaitingForOpen() {
     precondition(readyState != .initialized && readyState != .connecting)
     for continuation in parkedUntilOpen {
       continuation.resume()
