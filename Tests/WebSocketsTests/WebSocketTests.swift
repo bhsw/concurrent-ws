@@ -46,6 +46,32 @@ class WebSocketTests: XCTestCase {
     try await randomDataTest(url: thirdPartyServerURL, sizes: sizes)
   }
 
+  func testMaximumIncomingMessageSizeOption() async throws {
+    let server = TestServer()
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    var options = WebSocket.Options()
+    options.maximumIncomingMessageSize = 128 * 1024
+    let socket = WebSocket(url: try await server.start(path: "/test"), options: options)
+    let validData = randomData(size: 128 * 1024)
+    await socket.send(data: validData)
+    await socket.send(data: randomData(size: 128 * 1024 + 1))
+    await socket.close()
+    var events: [WebSocket.Event] = []
+    for try await event in socket {
+      events.append(event)
+    }
+    let expected: [WebSocket.Event] = [
+      .open(.init(subprotocol: nil, extraHeaders: [:])),
+      .binary(validData),
+      .close(code: .policyViolation, reason: "Maximum message size exceeded", wasClean: false)
+    ]
+    XCTAssertEqual(events, expected)
+  }
+
   func testSubprotocolOneFromList() async throws {
     let server = TestServer(subprotocol: "second")
     defer {
@@ -246,6 +272,15 @@ class WebSocketTests: XCTestCase {
     XCTAssertEqual(path, "/test")
   }
 
+  func testRedirectionDisabled() async throws {
+    var options = WebSocket.Options()
+    options.maximumRedirects = 0
+    do {
+      try await expectingErrorFromLocalServer(path: "/redirect", options: options)
+    } catch WebSocketError.maximumRedirectsExceeded {
+    }
+  }
+
   func testInvalidRedirectLocation() async throws {
     do {
       try await expectingErrorFromLocalServer(path: "/invalid-redirect-location")
@@ -349,8 +384,6 @@ class WebSocketTests: XCTestCase {
     XCTAssert(events == expected)
   }
 
-  // TODO: test payload size limitation option
-  
   func expectCloseCode(quirk: QuirkyTestServer.Quirk, code: WebSocket.CloseCode, reason: String? = nil) async throws {
     let server = QuirkyTestServer(with: quirk)
     defer {
@@ -373,15 +406,16 @@ class WebSocketTests: XCTestCase {
     }
   }
 
-  func expectingErrorFromLocalServer(path: String) async throws {
+  func expectingErrorFromLocalServer(path: String, options: WebSocket.Options = .init()) async throws {
     let server = TestServer()
     defer {
       Task {
         await server.stop()
       }
     }
-    let socket = WebSocket(url: try await server.start(path: path))
+    let socket = WebSocket(url: try await server.start(path: path), options: options)
     await socket.send(text: "Hello")
+    await socket.close()
     for try await _ in socket {
     }
     XCTFail("Expected an exception ")
