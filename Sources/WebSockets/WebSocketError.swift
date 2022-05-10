@@ -26,8 +26,8 @@ public enum WebSocketError: Error {
   /// A malformed HTTP response was received from the other endpoint during the handshake.
   case invalidHTTPResponse
 
-  /// The server rejected the request to upgrade to the WebSocket protocol.
-  case upgradeRejected
+  /// The server's response did not include a valid `Upgrade` header.
+  case invalidUpgradeHeader
 
   /// The server's response did not include a valid `Connection` header.
   case invalidConnectionHeader
@@ -45,7 +45,7 @@ public enum WebSocketError: Error {
   case invalidRedirection
 
   /// The server responded with an unexpected status code.
-  case unexpectedHTTPStatus(WebSocket.FailedHandshakeResult)
+  case upgradeRejected(WebSocket.FailedHandshakeResult)
 
   /// The other endpoint dropped the connection before the handshake completed.
   case unexpectedDisconnect
@@ -81,8 +81,8 @@ extension WebSocketError: CustomDebugStringConvertible {
         return "Invalid HTTP request"
       case .invalidHTTPResponse:
         return "Invalid HTTP response"
-      case .upgradeRejected:
-        return "WebSocket upgrade rejected"
+      case .invalidUpgradeHeader:
+        return "Invalid Upgrade header"
       case .invalidConnectionHeader:
         return "Invalid Connection header"
       case .keyMismatch:
@@ -93,8 +93,8 @@ extension WebSocketError: CustomDebugStringConvertible {
         return "WebSocket extension expectation mismatch"
       case .invalidRedirection:
         return "Invalid HTTP redirect"
-      case .unexpectedHTTPStatus(let status):
-        return "Unexpected HTTP status for WebSocket upgrade: \(status)"
+      case .upgradeRejected(let result):
+        return "WebSocket upgrade rejected: \(result)"
       case .unexpectedDisconnect:
         return "Unexpected disconnect"
       case .timeout:

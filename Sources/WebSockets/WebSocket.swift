@@ -433,9 +433,9 @@ private extension WebSocket {
   }
 
   /// Performs the opening HTTP handshake.
-  /// - Returns: The `open` event, or `nil` if the connection was closed prior to the handshake completing.
+  /// - Returns: The `open` event.
   /// - Throws: ``WebSocketError`` if the handshake fails.
-  func connect() async throws -> Event? {
+  func connect() async throws -> Event {
     precondition(readyState == .initialized)
     readyState = .connecting
     handshakeTimerTask = Task(priority: TaskPriority.low) {
@@ -462,7 +462,7 @@ private extension WebSocket {
       for try await event in connection! {
         switch event {
           case .connect:
-            await connection!.send(data: handshake.makeRequest(url: url))
+            await connection!.send(data: handshake.makeRequest(url: url).encode())
           case .receive(let data):
             switch try handshake.receive(data: data) {
               case .incomplete:

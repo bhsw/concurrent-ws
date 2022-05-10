@@ -4,7 +4,7 @@
 import Foundation
 
 /// An adapter for `AsyncThrowingStream` that makes it easier to use as an asynchronous event queue, particularly inside an actor.
-internal class EventQueue<T> {
+internal final class EventQueue<T> {
   typealias StreamType = AsyncThrowingStream<T, Error>
 
   private var stream: StreamType!

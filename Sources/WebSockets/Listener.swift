@@ -4,7 +4,7 @@
 import Foundation
 import Network
 
-class Listener: AsyncSequence {
+final class Listener: AsyncSequence {
   enum Event {
     case ready
     case networkUnavailable

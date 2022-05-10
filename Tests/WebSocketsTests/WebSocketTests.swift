@@ -221,10 +221,10 @@ class WebSocketTests: XCTestCase {
     }
   }
 
-  func testUnexpectedHTTPStatus() async throws {
+  func testUpgradeRejected() async throws {
     do {
       try await expectingErrorFromLocalServer(path: "/404")
-    } catch WebSocketError.unexpectedHTTPStatus(let result) {
+    } catch WebSocketError.upgradeRejected(let result) {
       XCTAssertEqual(result.status, .notFound)
     }
   }
@@ -291,7 +291,7 @@ class WebSocketTests: XCTestCase {
   func testInvalidUpgradeHeader() async throws {
     do {
       try await expectingErrorDueToDefectiveServer(with: .invalidUpgradeHeader)
-    } catch WebSocketError.upgradeRejected {
+    } catch WebSocketError.invalidUpgradeHeader {
     }
   }
 

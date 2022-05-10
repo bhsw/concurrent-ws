@@ -26,7 +26,7 @@ internal final class ClientHandshake {
     self.options = options
   }
 
-  func makeRequest(url: URL) -> Data {
+  func makeRequest(url: URL) -> HTTPMessage {
     let key = generateKey()
     expectedKey = sha1(key + protocolUUID)
 
@@ -39,7 +39,7 @@ internal final class ClientHandshake {
     }
     request.addWebSocketVersion(supportedWebSocketVersion)
     request.extraHeaders = options.extraHeaders
-    return request.encode()
+    return request
   }
 
   func receive(data: Data?) throws -> Status {
@@ -56,7 +56,7 @@ internal final class ClientHandshake {
   private func handleResponse(_ message: HTTPMessage, unconsumed: Data) throws -> Status {
     if message.status!  == .switchingProtocols {
       guard message.upgrade.contains(websocketProtocol) == true else {
-        throw WebSocketError.upgradeRejected
+        throw WebSocketError.invalidUpgradeHeader
       }
       guard message.connection.contains(where: { $0.lowercased() == "upgrade" }) == true else {
         throw WebSocketError.invalidConnectionHeader
@@ -90,7 +90,7 @@ internal final class ClientHandshake {
                                                  extraHeaders: message.extraHeaders,
                                                  contentType: ContentType(from: message.contentType),
                                                  content: message.content)
-    throw WebSocketError.unexpectedHTTPStatus(result)
+    throw WebSocketError.upgradeRejected(result)
   }
 }
 

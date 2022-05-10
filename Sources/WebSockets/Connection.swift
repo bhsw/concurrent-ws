@@ -9,7 +9,7 @@ import Network
 /// This internal class exists for two reasons:
 /// * To isolate code that uses older conventions than tasks/async/await to a relatively small part of the library.
 /// * To provide a consistent API on top of different lower level networking libraries.
-class Connection: AsyncSequence {
+final class Connection: AsyncSequence {
   enum Event {
     /// Indicates that a successful connection was made to the other endpoint.
     case connect

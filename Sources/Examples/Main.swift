@@ -37,7 +37,7 @@ struct App {
       for try await event in sock {
         print("EVENT:", event)
       }
-    } catch WebSocketError.unexpectedHTTPStatus(let result) {
+    } catch WebSocketError.upgradeRejected(let result) {
       print("STATUS:", result.status)
       if let contentType = result.contentType {
         print("CONTENT-TYPE:", contentType)
