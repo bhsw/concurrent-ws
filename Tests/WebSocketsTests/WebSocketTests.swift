@@ -2,7 +2,7 @@
 // Copyright 2022 Robert A. Stoerrle
 
 import XCTest
-import WebSockets
+@testable import WebSockets
 
 fileprivate let thirdPartyServerURL = URL(string: "wss://echo.websocket.events")!
 
@@ -121,23 +121,6 @@ class WebSocketTests: XCTestCase {
     }
   }
 
-  func testRedirect() async throws {
-    let server = TestServer(subprotocol: nil)
-    defer {
-      Task {
-        await server.stop()
-      }
-    }
-
-    let socket = WebSocket(url: try await server.start(path: "/redirect"))
-    await socket.send(text: "Hello")
-    await socket.close()
-    for try await _ in socket {
-    }
-    let path = await socket.url.path
-    XCTAssertEqual(path, "/test")
-  }
-
   func testJustClosingNeverOpens() async throws {
     let socket = WebSocket(url: URL(string: "ws://localhost")!)         // The actual URL won't be used in this case
     await socket.close()
@@ -239,38 +222,183 @@ class WebSocketTests: XCTestCase {
   }
 
   func testUnexpectedHTTPStatus() async throws {
-    let server = TestServer()
-    defer {
-      Task {
-        await server.stop()
-      }
-    }
-    let socket = WebSocket(url: try await server.start(path: "/404"))
-    await socket.send(text: "Hello")
     do {
-      for try await _ in socket {
-      }
-      XCTFail("Expected an exception ")
+      try await expectingErrorFromLocalServer(path: "/404")
     } catch WebSocketError.unexpectedHTTPStatus(let result) {
       XCTAssertEqual(result.status, .notFound)
     }
   }
 
+  func testRedirect() async throws {
+    let server = TestServer(subprotocol: nil)
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+
+    let socket = WebSocket(url: try await server.start(path: "/redirect"))
+    await socket.send(text: "Hello")
+    await socket.close()
+    for try await _ in socket {
+    }
+    let path = await socket.url.path
+    XCTAssertEqual(path, "/test")
+  }
+
+  func testInvalidRedirectLocation() async throws {
+    do {
+      try await expectingErrorFromLocalServer(path: "/invalid-redirect-location")
+    } catch WebSocketError.invalidRedirectLocation {
+    }
+  }
+
+  func testMissingRedirectLocation() async throws {
+    do {
+      try await expectingErrorFromLocalServer(path: "/missing-redirect-location")
+    } catch WebSocketError.invalidRedirection {
+    }
+  }
+
   func testRedirectLoop() async throws {
+    do {
+      try await expectingErrorFromLocalServer(path: "/redirect-loop")
+    } catch WebSocketError.maximumRedirectsExceeded {
+    }
+  }
+
+  func testKeyMismatch() async throws {
+    do {
+      try await expectingErrorDueToDefectiveServer(with: .incorrectKey)
+    } catch WebSocketError.keyMismatch {
+    }
+  }
+
+  func testExtensionMismatch() async throws {
+    do {
+      try await expectingErrorDueToDefectiveServer(with: .badExtension)
+    } catch WebSocketError.extensionMismatch {
+    }
+  }
+
+  func testInvalidConnectionHeader() async throws {
+    do {
+      try await expectingErrorDueToDefectiveServer(with: .invalidConnectionHeader)
+    } catch WebSocketError.invalidConnectionHeader {
+    }
+  }
+
+  func testInvalidUpgradeHeader() async throws {
+    do {
+      try await expectingErrorDueToDefectiveServer(with: .invalidUpgradeHeader)
+    } catch WebSocketError.upgradeRejected {
+    }
+  }
+
+  func testInvalidHTTPResponse() async throws {
+    do {
+      try await expectingErrorDueToDefectiveServer(with: .invalidHTTPResponse)
+    } catch WebSocketError.invalidHTTPResponse {
+    }
+  }
+
+  func testMaskedFrameFromServerFailsConnection() async throws {
+    try await expectCloseCode(quirk: .sendMaskedFrame, code: .protocolError, reason: "Masked payload forbidden")
+  }
+
+  func testInvalidOpcodeFromServerFailsConnection() async throws {
+    try await expectCloseCode(quirk: .sendInvalidOpcode, code: .protocolError, reason: "Invalid opcode")
+  }
+
+  func testInvalidUTF8FromServerFailsConnection() async throws {
+    try await expectCloseCode(quirk: .sendInvalidUTF8, code: .protocolError, reason: "Invalid UTF-8 data")
+  }
+
+  func testUnexpectedContinuationFrameFromServerFailsConnection() async throws {
+    try await expectCloseCode(quirk: .sendUnexpectedContinuation, code: .protocolError,
+                              reason: "Unexpected continuation frame")
+  }
+
+  func testNonzeroReservedBitsFromServerFailsConnection() async throws {
+    try await expectCloseCode(quirk: .sendNonzeroReservedBits, code: .protocolError, reason: "Reserved bits must be 0")
+  }
+
+  func testInvalidPayloadLengthFromServerFailsConnection() async throws {
+    try await expectCloseCode(quirk: .sendInvalidPayloadLength, code: .protocolError, reason: "Invalid payload length")
+  }
+
+  func testFragmentedMessageFromServer() async throws {
+    let server = QuirkyTestServer(with: .sendFragmentedMessage)
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    let socket = WebSocket(url: try await server.start())
+    await socket.send(text: "Hello")
+    var events: [WebSocket.Event] = []
+    for try await event in socket {
+      events.append(event)
+    }
+    let expected: [WebSocket.Event] = [
+      .open(.init(subprotocol: nil, extraHeaders: [:])),
+      .text("Hello, world."),
+      .close(code: .goingAway, reason: "", wasClean: false)         // Quirky server disconnects right after sending close frame
+    ]
+    print(events)
+    XCTAssert(events == expected)
+  }
+
+  // TODO: test payload size limitation option
+  
+  func expectCloseCode(quirk: QuirkyTestServer.Quirk, code: WebSocket.CloseCode, reason: String? = nil) async throws {
+    let server = QuirkyTestServer(with: quirk)
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    let socket = WebSocket(url: try await server.start())
+    await socket.send(text: "Hello")
+    for try await event in socket {
+      switch event {
+        case .close(code: let inCode, reason: let inReason, wasClean: _):
+          XCTAssert(inCode == code)
+          if let reason = reason {
+            XCTAssert(inReason == reason)
+          }
+        default:
+          break
+      }
+    }
+  }
+
+  func expectingErrorFromLocalServer(path: String) async throws {
     let server = TestServer()
     defer {
       Task {
         await server.stop()
       }
     }
-    let socket = WebSocket(url: try await server.start(path: "/redirect-loop"))
+    let socket = WebSocket(url: try await server.start(path: path))
     await socket.send(text: "Hello")
-    do {
-      for try await _ in socket {
-      }
-      XCTFail("Expected an exception ")
-    } catch WebSocketError.maximumRedirectsExceeded {
+    for try await _ in socket {
     }
+    XCTFail("Expected an exception ")
+  }
+
+  func expectingErrorDueToDefectiveServer(with quirk: QuirkyTestServer.Quirk) async throws {
+    let server = QuirkyTestServer(with: quirk)
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    let socket = WebSocket(url: try await server.start())
+    await socket.send(text: "Hello")
+    for try await _ in socket {
+    }
+    XCTFail("Expected an exception ")
   }
 
   func randomDataTest(url: URL, sizes: [Int]) async throws {

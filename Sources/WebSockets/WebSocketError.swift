@@ -62,3 +62,49 @@ public enum WebSocketError: Error {
   /// The listener for a ``WebSocketServer`` failed.
   case listenerFailed(reason: String, underlyingError: Error)
 }
+
+extension WebSocketError: CustomDebugStringConvertible {
+  /// A description of the error suitable for debugging.
+  public var debugDescription: String {
+    switch self {
+      case .invalidURL(let url):
+        return "Invalid URL: \(url)"
+      case .invalidURLScheme(let scheme):
+        return "Invalid WebSocket URL scheme: \(scheme)"
+      case .hostLookupFailed(reason: let reason, underlyingError: _):
+        return "Host lookup failed: \(reason)"
+      case .connectionFailed(reason: let reason, underlyingError: _):
+        return "Connection failed: \(reason)"
+      case .tlsFailed(reason: let reason, underlyingError: _):
+        return "Failed to establish TLS: \(reason)"
+      case .invalidHTTPRequest:
+        return "Invalid HTTP request"
+      case .invalidHTTPResponse:
+        return "Invalid HTTP response"
+      case .upgradeRejected:
+        return "WebSocket upgrade rejected"
+      case .invalidConnectionHeader:
+        return "Invalid Connection header"
+      case .keyMismatch:
+        return "WebSocket key mismatch"
+      case .subprotocolMismatch:
+        return "WebSocket subprotocol expectation mismatch"
+      case .extensionMismatch:
+        return "WebSocket extension expectation mismatch"
+      case .invalidRedirection:
+        return "Invalid HTTP redirect"
+      case .unexpectedHTTPStatus(let status):
+        return "Unexpected HTTP status for WebSocket upgrade: \(status)"
+      case .unexpectedDisconnect:
+        return "Unexpected disconnect"
+      case .timeout:
+        return "WebSocket handshake timed out"
+      case .maximumRedirectsExceeded:
+        return "Maximum number of HTTP redirects exceeded"
+      case .invalidRedirectLocation(let location):
+        return "Invalid HTTP redirect location: \(location)"
+      case .listenerFailed(reason: let reason, underlyingError: _):
+        return "HTTP server error: \(reason)"
+    }
+  }
+}

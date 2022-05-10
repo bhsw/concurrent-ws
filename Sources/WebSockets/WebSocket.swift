@@ -91,7 +91,7 @@ public actor WebSocket {
   }
 
   /// An event that has occurred on a `WebSocket`.
-  public enum Event {
+  public enum Event : Equatable {
     /// Indicates that a connection to the remote endpoint was successful.
     ///
     /// This event is emitted exactly once and is always the first event emitted.
@@ -147,7 +147,7 @@ public actor WebSocket {
   }
 
   /// The result of a successful WebSocket opening handshake.
-  public struct HandshakeResult {
+  public struct HandshakeResult : Equatable {
     /// The subprotocol that was negotiated by the endpoints, or `nil` if no subprotocol is in effect.
     public let subprotocol: String?
 
@@ -437,89 +437,73 @@ private extension WebSocket {
   /// - Throws: ``WebSocketError`` if the handshake fails.
   func connect() async throws -> Event? {
     precondition(readyState == .initialized)
+    readyState = .connecting
+    handshakeTimerTask = Task(priority: TaskPriority.low) {
+      guard (try? await Task.sleep(nanoseconds: UInt64(options.openingHandshakeTimeout * 1_000_000_000))) != nil else {
+        return
+      }
+      openingHandshakeDidExpire = true
+      connection?.close()
+      readyState = .closed
+    }
     var redirectCount = 0
-  redirect: while true {
+    do {
+    redirect: while true {
       guard let scheme = url.scheme?.lowercased(), let host = url.host else {
-        readyState = .closed
-        resumeTasksWaitingForOpen()
         throw WebSocketError.invalidURL(url)
       }
       guard scheme == "ws" || scheme == "wss" else {
-        readyState = .closed
-        resumeTasksWaitingForOpen()
         throw WebSocketError.invalidURLScheme(scheme)
       }
-
-      readyState = .connecting
-      if (handshakeTimerTask == nil) {
-        // When a redirect has occured, the handshake timer will already be running.
-        handshakeTimerTask = Task(priority: TaskPriority.low) {
-          do {
-            try await Task.sleep(nanoseconds: UInt64(options.openingHandshakeTimeout * 1_000_000_000))
-            openingHandshakeDidExpire = true
-            connection?.close()
-            readyState = .closed
-          } catch {
-          }
-        }
-      }
-
       let useTLS = scheme == "wss"
       let port = UInt16(url.port ?? (useTLS ? 443 : 80))
       connection = Connection(host: host, port: port, tls: useTLS, options: options)
       let handshake = ClientHandshake(options: options)
-      do {
-        for try await event in connection! {
-          switch event {
-            case .connect:
-              await connection!.send(data: handshake.makeRequest(url: url))
-            case .receive(let data):
-              switch try handshake.receive(data: data) {
-                case .incomplete:
-                  continue
-                case .ready(result: let result, unconsumed: let unconsumed):
-                  cancelHandshakeTimer()
-                  inputFramer.push(unconsumed)
-                  readyState = .open
-                  resumeTasksWaitingForOpen()
-                  return .open(result)
-                case .redirect(let location):
-                  guard redirectCount < options.maximumRedirects else {
-                    throw WebSocketError.maximumRedirectsExceeded
-                  }
-                  guard let newURL = URL(string: location, relativeTo: url) else {
-                    throw WebSocketError.invalidRedirectLocation(location)
-                  }
-                  redirectCount += 1
-                  connection!.close()
-                  connection = nil
-                  self.url = newURL
-                  continue redirect
-              }
-            default:
-              continue
-          }
+      for try await event in connection! {
+        switch event {
+          case .connect:
+            await connection!.send(data: handshake.makeRequest(url: url))
+          case .receive(let data):
+            switch try handshake.receive(data: data) {
+              case .incomplete:
+                continue
+              case .ready(result: let result, unconsumed: let unconsumed):
+                cancelHandshakeTimer()
+                inputFramer.push(unconsumed)
+                readyState = .open
+                resumeTasksWaitingForOpen()
+                return .open(result)
+              case .redirect(let location):
+                guard redirectCount < options.maximumRedirects else {
+                  throw WebSocketError.maximumRedirectsExceeded
+                }
+                guard let newURL = URL(string: location, relativeTo: url) else {
+                  throw WebSocketError.invalidRedirectLocation(location)
+                }
+                redirectCount += 1
+                connection!.close()
+                connection = nil
+                self.url = newURL.absoluteURL
+                continue redirect
+            }
+          default:
+            continue
         }
-        if openingHandshakeDidExpire {
-          throw WebSocketError.timeout
-        }
-        throw WebSocketError.unexpectedDisconnect
-      } catch let error as WebSocketError {
-        cancelHandshakeTimer()
-        let suppressError = readyState == .closed && !openingHandshakeDidExpire
-        if readyState != .closed {
-          connection!.close()
-        }
-        connection = nil
-        readyState = .closed
-        resumeTasksWaitingForOpen()
-        if (suppressError) {
-          return nil
-        }
-        throw error
-      } catch {
-        fatalError("Connection is only allowed to throw WebSocketError")
       }
+      if openingHandshakeDidExpire {
+        throw WebSocketError.timeout
+      }
+      throw WebSocketError.unexpectedDisconnect
+    }
+    } catch let error as WebSocketError {
+      cancelHandshakeTimer()
+      connection?.close()
+      connection = nil
+      readyState = .closed
+      resumeTasksWaitingForOpen()
+      throw error
+    } catch {
+      fatalError("Connection is only allowed to throw WebSocketError")
     }
   }
 
@@ -623,7 +607,7 @@ private extension WebSocket {
   ///   - reason: The reason.
   /// - Returns: The `close` event.
   func abortConnection(with code: CloseCode, reason: String) async -> Event {
-    precondition(readyState == .open)
+    precondition(readyState == .open || readyState == .closing)
     pendingCloseCode = code
     pendingCloseReason = reason
     readyState = .closing

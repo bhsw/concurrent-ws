@@ -652,8 +652,8 @@ struct HTTPVersion: Equatable, Comparable {
 
 fileprivate extension Data {
   func trimmingWhitespace() -> Data {
-    let start = self.firstIndex { !$0.isWhitespace } ?? 0
-    let end = (self.lastIndex { !$0.isWhitespace } ?? self.count - 1) + 1
+    let start = self.firstIndex { !$0.isWhitespace } ?? self.startIndex
+    let end = (self.lastIndex { !$0.isWhitespace } ?? self.endIndex - 1) + 1
     return self[start..<end]
   }
 }

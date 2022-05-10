@@ -6,7 +6,6 @@ import WebSockets
 
 actor TestServer {
   let server: WebSocketServer
-  var started = false
   let subprotocol: String?
   let httpResponseDelay: TimeInterval
 
@@ -19,24 +18,21 @@ actor TestServer {
   }
 
   func start(path: String = "") async throws -> URL {
-    if !started {
-      started = true
-      for try await event in server {
-        if case .ready = event {
-          break
-        }
+    for try await event in server {
+      if case .ready = event {
+        break
       }
-      Task {
-        for try await event in server {
-          switch event {
-            case .request(let request):
-              if httpResponseDelay != 0 {
-                try await Task.sleep(nanoseconds: UInt64(httpResponseDelay * 1_000_000_000))
-              }
-              await handleRequest(request)
-            default:
-              break
-          }
+    }
+    Task {
+      for try await event in server {
+        switch event {
+          case .request(let request):
+            if httpResponseDelay != 0 {
+              try await Task.sleep(nanoseconds: UInt64(httpResponseDelay * 1_000_000_000))
+            }
+            await handleRequest(request)
+          default:
+            break
         }
       }
     }
@@ -56,6 +52,11 @@ actor TestServer {
           await request.redirect(to: "/test")
         case "/redirect-loop":
           await request.redirect(to: "/redirect-loop")
+        case "/invalid-redirect-location":
+          await request.redirect(to: " ")
+        case "/missing-redirect-location":
+          let response = WebSocketServer.Response(with: .movedPermanently)
+          await request.respond(with: response)
         case "/test":
           guard let socket = await request.upgrade(subprotocol: subprotocol) else {
             return

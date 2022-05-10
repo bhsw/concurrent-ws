@@ -248,7 +248,6 @@ internal struct InputFramer {
           }
         case .messagePayload:
           if (messagePayload == nil) {
-            payloadRemaining = Int(payloadLength)
             messagePayload = Data(capacity: payloadRemaining)
           }
           let count = min(payloadRemaining, input.endIndex - index)
@@ -271,7 +270,6 @@ internal struct InputFramer {
           continue
         case .controlPayload:
           if (controlPayload == nil) {
-            payloadRemaining = Int(payloadLength)
             controlPayload = Data(capacity: payloadRemaining)
           }
           let count = min(payloadRemaining, input.endIndex - index)
@@ -318,6 +316,7 @@ internal struct InputFramer {
     } else {
       state = masked ? .maskKey0 : .controlPayload
     }
+    payloadRemaining = Int(payloadLength)
     return true
   }
 
