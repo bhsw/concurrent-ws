@@ -136,7 +136,7 @@ actor QuirkyTestClient {
 
   @discardableResult
   private func send(frame: Frame) async -> Bool {
-    return await connection?.send(data: outputFramer.encode(frame)) ?? false
+    return await connection?.send(multiple: outputFramer.encode(frame)) ?? false
   }
 
   private func checkForInputFrame() async -> WebSocket.Event? {

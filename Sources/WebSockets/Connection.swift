@@ -103,6 +103,30 @@ final class Connection: AsyncSequence {
     }
   }
 
+  @discardableResult
+  func send(multiple: [Data]) async -> Bool {
+    guard !multiple.isEmpty else {
+      return true
+    }
+    return await withCheckedContinuation { continuation in
+      dispatchQueue.async { [self] in
+        connection.batch {
+          for data in multiple.prefix(multiple.count - 1) {
+            connection.send(content: data, completion: .contentProcessed { error in
+            })
+          }
+          connection.send(content: multiple.last, completion: .contentProcessed { error in
+            if error != nil {
+              continuation.resume(returning: false)
+            } else {
+              continuation.resume(returning: true)
+            }
+          })
+        }
+      }
+    }
+  }
+
   func close() {
     connection.cancel()
     continuation.finish()

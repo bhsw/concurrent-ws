@@ -79,11 +79,11 @@ internal struct OutputFramer {
     self.isClient = isClient
   }
 
-  mutating func encode(_ frame: Frame) -> Data {
+  mutating func encode(_ frame: Frame) -> [Data] {
     let key: UInt32? = isClient ? UInt32.random(in: 1..<UInt32.max) : nil
     switch frame {
       case .text(let text):
-        return encode(as: .text, payload: text.utf8, using: key)
+        return encode(as: .text, payload: text.data(using: .utf8)!, using: key)
       case .binary(let data):
         return encode(as: .binary, payload: data, using: key)
       case .close(let code, let reason):
@@ -110,30 +110,27 @@ internal struct OutputFramer {
     }
   }
 
-  private mutating func encode<T : Collection>(as opcode: Opcode,
-                                               payload: T,
-                                               using maskKey: UInt32? = nil,
-                                               fin: Bool = true) -> Data where T.Element == UInt8 {
-    var output = Data(capacity: maxHeaderSize + payload.count)
-    output.append((opcode.rawValue & 0xf) | (fin ? 0x80 : 0))
+  private mutating func encode(as opcode: Opcode, payload: Data, using maskKey: UInt32? = nil, fin: Bool = true) -> [Data] {
+    var header = Data(capacity: maxHeaderSize + payload.count)
+    header.append((opcode.rawValue & 0xf) | (fin ? 0x80 : 0))
     let maskBit: UInt8 = maskKey != nil ? 0x80 : 0
     switch payload.count {
       case 0...125:
-        output.append(UInt8(payload.count) | maskBit)
+        header.append(UInt8(payload.count) | maskBit)
       case 126...65535:
-        output.append(126 | maskBit)
-        output.appendBigEndian(UInt16(payload.count))
+        header.append(126 | maskBit)
+        header.appendBigEndian(UInt16(payload.count))
       default:
-        output.append(127 | maskBit)
-        output.appendBigEndian(UInt64(payload.count))
+        header.append(127 | maskBit)
+        header.appendBigEndian(UInt64(payload.count))
     }
     if let key = maskKey {
-      output.appendBigEndian(key)
-      output.append(payload, usingMask: key)
-    } else {
-      output.append(contentsOf: payload)
+      header.appendBigEndian(key)
+      var maskedPayload = payload
+      maskedPayload.mask(using: key, range:maskedPayload.startIndex..<maskedPayload.endIndex)
+      return [ header, maskedPayload ]
     }
-    return output
+    return [ header, payload ]
   }
 }
 
@@ -278,7 +275,7 @@ internal struct InputFramer {
           index += count
           if (payloadRemaining == 0) {
             if (masked) {
-              controlPayload!.mask(using: maskKey, range: 0..<controlPayload!.count)
+              controlPayload!.mask(using: maskKey, range: controlPayload!.startIndex..<controlPayload!.endIndex)
             }
             emit(frame: decodeFrame(of: opcode!, payload: controlPayload!))
             controlPayload = nil
@@ -420,26 +417,14 @@ fileprivate extension Data {
       UInt8(key >> 8 & 255),
       UInt8(key & 255)
     ]
-    var maskIndex = 0
-    for index in range {
-      self[index] ^= mask[maskIndex]
-      maskIndex += 1
-      maskIndex &= 3
-    }
-  }
-
-  mutating func append<T : Collection>(_ data: T, usingMask key: UInt32) where T.Element == UInt8 {
-    let mask: [UInt8] = [
-      UInt8(key >> 24),
-      UInt8(key >> 16 & 255),
-      UInt8(key >> 8 & 255),
-      UInt8(key & 255)
-    ]
-    var maskIndex = 0
-    for c in data {
-      append(c ^ mask[maskIndex])
-      maskIndex += 1
-      maskIndex &= 3
+    self.withUnsafeMutableBytes { ptr in
+      var index = range.startIndex
+      var maskIndex = 0
+      while index < range.endIndex {
+        ptr[index] ^= mask[maskIndex & 3]
+        index &+= 1
+        maskIndex &+= 1
+      }
     }
   }
 

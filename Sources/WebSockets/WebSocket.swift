@@ -345,7 +345,7 @@ public actor WebSocket {
         readyState = .closing
         pendingCloseCode = code.isRestricted ? .normalClosure : code
         pendingCloseReason = reason
-        if await connection!.send(data: outputFramer.encode(.close(pendingCloseCode!, reason))) {
+        if await connection!.send(multiple: outputFramer.encode(.close(pendingCloseCode!, reason))) {
           didSendCloseFrame = true
         }
         handshakeTimerTask = Task(priority: TaskPriority.low) {
@@ -426,7 +426,7 @@ private extension WebSocket {
         await finishOpeningHandshake()
         return await send(frame: frame)
       case .open:
-        return await connection!.send(data: outputFramer.encode(frame))
+        return await connection!.send(multiple: outputFramer.encode(frame))
       case .closing, .closed:
         return false
     }
@@ -565,12 +565,12 @@ private extension WebSocket {
           pendingCloseCode = code;
           pendingCloseReason = reason
           readyState = .closing
-          await connection!.send(data: outputFramer.encode(.close(code, reason)))
+          await connection!.send(multiple: outputFramer.encode(.close(code, reason)))
         }
         return finishClose()
       case .ping(let data):
         if (options.automaticallyRespondToPings) {
-          await connection!.send(data: outputFramer.encode(.pong(data)))
+          await connection!.send(multiple: outputFramer.encode(.pong(data)))
         }
         return .ping(data)
       case .pong(let data):
@@ -611,7 +611,7 @@ private extension WebSocket {
     pendingCloseCode = code
     pendingCloseReason = reason
     readyState = .closing
-    await connection!.send(data: outputFramer.encode(.close(code, reason)))
+    await connection!.send(multiple: outputFramer.encode(.close(code, reason)))
     return finishClose()
   }
 

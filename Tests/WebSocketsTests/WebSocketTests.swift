@@ -36,7 +36,7 @@ class WebSocketTests: XCTestCase {
         await server.stop()
       }
     }
-    let sizes = [ 0, 1, 16, 64, 125, 126, 127, 128, 65535, 65536, 65537, 999_999 ]
+    let sizes = [ 0, 1, 16, 64, 125, 126, 127, 128, 65535, 65536, 65537, 999_999, 3_999_999 ]
     let url = try await server.start(path: "/test")
     try await randomDataTest(url: url, sizes: sizes)
   }
