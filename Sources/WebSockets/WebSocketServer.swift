@@ -75,7 +75,7 @@ public actor WebSocketServer {
   ///
   /// No further events will be added to the queue, and the event iterator will return `nil` once the final event has been consumed.
   ///
-  /// Incoming connections that have not been upgraded to websockets are closed without an HTTP response. Existing websockets are **not closed**
+  /// Incoming connections that have not been upgraded to websockets will be closed without an HTTP response. Existing websockets are **not closed**
   /// by this function; it is up to the individual application to manage the lifespan of its websockets. There may still be `request` events in the queue
   /// after this function is called, and they can be handled as they normally would be, although the underlying connections will already be closed,
   /// and responses to those requests will be ignored.

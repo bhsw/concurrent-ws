@@ -112,10 +112,10 @@ public actor WebSocket {
     /// This event is emitted exactly once and is always the first event emitted.
     case open(HandshakeResult)
 
-    /// Indicates that a text message was received from the other endpoint.
+    /// Indicates that a textual message was received from the other endpoint.
     case text(String)
 
-    /// Indicates that a textual message was received from the other endpoint.
+    /// Indicates that a binary data message was received from the other endpoint.
     case binary(Data)
 
     /// Indicates that the connection has been closed.
