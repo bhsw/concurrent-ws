@@ -27,7 +27,7 @@ actor QuirkyTestClient {
     self.url = url
     self.quirk = quirk
     self.options = options
-    inputFramer = InputFramer(forClient: true, maximumMessageSize: options.maximumIncomingMessageSize)
+    inputFramer = InputFramer(forClient: true, maximumMessageSize: options.maximumIncomingMessagePayloadSize)
     outputFramer = OutputFramer(forClient: quirk != .sendUnmasked)
   }
 

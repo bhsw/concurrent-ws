@@ -11,20 +11,17 @@ is subject to change at any time.
 ## Features
 
 * Supports both `ws` (unencrypted) and `wss` (TLS) URL schemes
+* Includes client and server implementations
+* Supports the `permessage-deflate` WebSocket compression extension
 * Many tunable options, including:
   * Maximum incoming message length
   * HTTP redirect behavior
   * Custom HTTP headers
   * Timeouts for the opening and closing handshakes
   * Automatic ping response
-* A simple HTTP 1.1 server with the ability to upgrade connections to WebSockets
+  * Thresholds to trigger or inhibit compression for text and binary messages
 * A fully documented public API
 * 100% Swift using actors to protect mutable state
 * Uses the platform's `Network` framework for communication (TCP/IP and TLS layers only)
 * No third-party dependencies
 * MIT License
-
-
-## Not Currently Supported
-
-* WebSocket extensions, notably `permessage-deflate`.

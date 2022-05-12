@@ -415,7 +415,7 @@ extension HTTPMessage {
 
 struct ParameterizedToken: Equatable {
   let token: String
-  private var parameters: [String: String] = [:]
+  private(set) var parameters: [String: String] = [:]
 
   init(token: String) {
     self.token = token.lowercased()

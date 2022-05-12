@@ -56,7 +56,7 @@ actor EchoServer {
   private func handleRequest(_ request: WebSocketServer.Request) async {
     if request.upgradeRequested {
       var options = WebSocket.Options()
-      options.maximumIncomingMessageSize = 1024 * 1024
+      options.maximumIncomingMessagePayloadSize = 1024 * 1024
       guard let socket = await request.upgrade(options: options) else {
         return
       }

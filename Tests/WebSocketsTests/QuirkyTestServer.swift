@@ -76,7 +76,6 @@ actor QuirkyTestServer {
       } catch {
         connection.close()
       }
-      print("*** exit serve ***")
     }
   }
 

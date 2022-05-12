@@ -54,7 +54,8 @@ class WebSocketTests: XCTestCase {
       }
     }
     var options = WebSocket.Options()
-    options.maximumIncomingMessageSize = 128 * 1024
+    options.enableCompression = false
+    options.maximumIncomingMessagePayloadSize = 128 * 1024
     let socket = WebSocket(url: try await server.start(path: "/test"), options: options)
     let validData = randomData(size: 128 * 1024)
     await socket.send(data: validData)
@@ -65,7 +66,7 @@ class WebSocketTests: XCTestCase {
       events.append(event)
     }
     let expected: [WebSocket.Event] = [
-      .open(.init(subprotocol: nil, extraHeaders: [:])),
+      .open(.init(subprotocol: nil, compressionAvailable: false, extraHeaders: [:])),
       .binary(validData),
       .close(code: .policyViolation, reason: "Maximum message size exceeded", wasClean: false)
     ]
@@ -376,11 +377,10 @@ class WebSocketTests: XCTestCase {
       events.append(event)
     }
     let expected: [WebSocket.Event] = [
-      .open(.init(subprotocol: nil, extraHeaders: [:])),
+      .open(.init(subprotocol: nil, compressionAvailable: false, extraHeaders: [:])),
       .text("Hello, world."),
       .close(code: .goingAway, reason: "", wasClean: false)         // Quirky server disconnects right after sending close frame
     ]
-    print(events)
     XCTAssert(events == expected)
   }
 

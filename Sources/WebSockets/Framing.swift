@@ -36,6 +36,8 @@ internal enum ProtocolError: Error, CustomDebugStringConvertible {
   case maskedPayloadForbidden
   case unexpectedContinuation
   case reservedBitsNonzero
+  case forbiddenOpcodeForCompression
+  case invalidCompressedData
 
   var debugDescription: String {
     switch self {
@@ -53,6 +55,11 @@ internal enum ProtocolError: Error, CustomDebugStringConvertible {
         return "Unexpected continuation frame"
       case .reservedBitsNonzero:
         return "Reserved bits must be 0"
+      case .forbiddenOpcodeForCompression:
+        return "Forbidden opcode for compression"
+      case .invalidCompressedData:
+        return "Invalid compressed data"
+
     }
   }
 }
@@ -74,18 +81,22 @@ internal enum PolicyViolation: Error, CustomDebugStringConvertible {
 
 internal struct OutputFramer {
   private let isClient: Bool
+  private var deflater: Deflater? = nil
 
-  init(forClient isClient: Bool) {
+  init(forClient isClient: Bool, compression: CompressionOffer? = nil) {
     self.isClient = isClient
+    if let compression = compression {
+      deflater = Deflater(offer: compression, forClient: isClient)
+    }
   }
 
-  mutating func encode(_ frame: Frame) -> [Data] {
+  mutating func encode(_ frame: Frame, compress: Bool = true) -> [Data] {
     let key: UInt32? = isClient ? UInt32.random(in: 1..<UInt32.max) : nil
     switch frame {
       case .text(let text):
-        return encode(as: .text, payload: text.data(using: .utf8)!, using: key)
+        return encode(as: .text, payload: text.data(using: .utf8)!, using: key, compress: compress)
       case .binary(let data):
-        return encode(as: .binary, payload: data, using: key)
+        return encode(as: .binary, payload: data, using: key, compress: compress)
       case .close(let code, let reason):
         var data = Data()
         data.appendBigEndian(code.rawValue)
@@ -110,9 +121,17 @@ internal struct OutputFramer {
     }
   }
 
-  private mutating func encode(as opcode: Opcode, payload: Data, using maskKey: UInt32? = nil, fin: Bool = true) -> [Data] {
+  mutating func enableCompression(offer: CompressionOffer) {
+    precondition(deflater == nil)
+    deflater = Deflater(offer: offer, forClient: isClient)
+  }
+
+  private mutating func encode(as opcode: Opcode, payload: Data, using maskKey: UInt32? = nil,
+                               compress: Bool = false, fin: Bool = true) -> [Data] {
+    let rsv1 = compress && deflater != nil && opcode.isMessageStart
+    let payload = rsv1 ? deflater!.compress(payload) : payload
     var header = Data(capacity: maxHeaderSize + payload.count)
-    header.append((opcode.rawValue & 0xf) | (fin ? 0x80 : 0))
+    header.append((opcode.rawValue & 0xf) | (fin ? 0x80 : 0) | (rsv1 ? 0x40 : 0))
     let maskBit: UInt8 = maskKey != nil ? 0x80 : 0
     switch payload.count {
       case 0...125:
@@ -142,6 +161,7 @@ internal struct InputFramer {
   private var state: State = .opcode
   private var opcode: Opcode? = nil
   private var messageOpcode: Opcode? = nil
+  private var compressed = false
   private var fin = false
   private var masked = false
   private var payloadLength: UInt64 = 0
@@ -151,10 +171,14 @@ internal struct InputFramer {
   private var controlPayload: Data? = nil
   private var frames: [Frame] = []
   private var fatal = false
+  private var inflater: Inflater? = nil
 
-  init(forClient isClient: Bool, maximumMessageSize: Int) {
+  init(forClient isClient: Bool, maximumMessageSize: Int, compression: CompressionOffer? = nil) {
     self.isClient = isClient
     self.maximumMessageSize = maximumMessageSize
+    if let compression = compression {
+      inflater = Inflater(offer: compression, forClient: isClient)
+    }
   }
 
   mutating func push(_ input: Data) {
@@ -166,13 +190,26 @@ internal struct InputFramer {
       var c = input[index]
       switch state {
         case .opcode:
-          guard c & 0x70 == 0 else {
-            emit(frame: .protocolError(.reservedBitsNonzero))
-            return
-          }
           guard let opcode = Opcode(rawValue: c & 0x0f) else {
             emit(frame: .protocolError(.invalidOpcode))
             return
+          }
+          fin = c & 0x80 != 0
+          let rsv1 = c & 0x40 != 0, rsv2 = c & 0x20 != 0, rsv3 = c & 0x10 != 0
+          guard !rsv2 && !rsv3 else {
+            emit(frame: .protocolError(.reservedBitsNonzero))
+            return
+          }
+          if (rsv1) {
+            guard inflater != nil else {
+              emit(frame: .protocolError(.reservedBitsNonzero))
+              return
+            }
+            guard opcode.isMessageStart else {
+              emit(frame: .protocolError(.forbiddenOpcodeForCompression))
+              return
+            }
+            compressed = true
           }
           guard opcode != .continuation || messagePayload != nil else {
             emit(frame: .protocolError(.unexpectedContinuation))
@@ -182,7 +219,6 @@ internal struct InputFramer {
           if (opcode.isMessageStart) {
             messageOpcode = opcode
           }
-          fin = c & 0x80 != 0
           state.next()
         case .length:
           masked = c & 0x80 != 0
@@ -257,7 +293,7 @@ internal struct InputFramer {
               messagePayload!.mask(using: maskKey, range: start..<messagePayload!.endIndex)
             }
             if (fin) {
-              emit(frame: decodeFrame(of: messageOpcode!, payload: messagePayload!))
+              emit(frame: decompressFrame(of: messageOpcode!, payload: messagePayload!))
               messagePayload = nil
               messageOpcode = nil
             }
@@ -299,7 +335,13 @@ internal struct InputFramer {
     state = .opcode
     opcode = nil
     messageOpcode = nil
+    compressed = false
     fatal = false
+  }
+
+  mutating func enableCompression(offer: CompressionOffer) {
+    precondition(inflater == nil)
+    inflater = Inflater(offer: offer, forClient: isClient)
   }
 
   private mutating func acceptPayloadLength() -> Bool {
@@ -320,7 +362,7 @@ internal struct InputFramer {
   private mutating func finishZeroLengthPayload() {
     if (opcode!.isMessage) {
       if (fin) {
-        emit(frame: decodeFrame(of: messageOpcode!, payload: messagePayload ?? Data()))
+        emit(frame: decompressFrame(of: messageOpcode!, payload: messagePayload ?? Data()))
         messagePayload = nil
         messageOpcode = nil
       }
@@ -329,6 +371,17 @@ internal struct InputFramer {
     }
     opcode = nil
     state = .opcode
+  }
+
+  private mutating func decompressFrame(of opcode: Opcode, payload: Data) -> Frame {
+    if !compressed {
+      return decodeFrame(of: opcode, payload: payload)
+    }
+    compressed = false
+    guard let result = try? decodeFrame(of: opcode, payload: inflater!.decompress(payload)) else {
+      return .protocolError(.invalidCompressedData)
+    }
+    return result
   }
 
   private func decodeFrame(of opcode: Opcode, payload: Data) -> Frame {

@@ -18,7 +18,7 @@ class WebSocketServerTests: XCTestCase {
       events.append(event)
     }
     let expect: [WebSocket.Event] = [
-      .open(.init(subprotocol: nil, extraHeaders: [:])),
+      .open(.init(subprotocol: nil, compressionAvailable: true, extraHeaders: [:])),
       .close(code: .protocolError, reason: "Masked payload required", wasClean: false)
     ]
     XCTAssertEqual(events, expect)

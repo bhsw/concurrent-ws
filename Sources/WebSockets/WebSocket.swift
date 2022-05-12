@@ -3,9 +3,6 @@
 
 import Foundation
 
-// TODO: basic authorization?
-// TODO: task cancellation behavior while iterating over events
-
 /// A WebSocket endpoint class with a modern API based on [Swift Concurrency](https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html).
 ///
 /// This implementation supports both client and server WebSockets based on [RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455). See
@@ -13,7 +10,7 @@ import Foundation
 ///
 /// `WebSocket` is a an `AsyncSequence` that allows you to iterate over and react to events that occur on the connection, such as text or binary data
 /// received from the other endpoint. Each websocket should have a single, dedicated `Task` that processes events from that websocket. However, the rest of
-/// the API, such as ``WebSocket/send(text:)`` and ``WebSocket/close(with:reason:)`` is designed to be used from any task or thread.
+/// the API, such as ``WebSocket/send(text:compress:)`` and ``WebSocket/close(with:reason:)`` is designed to be used from any task or thread.
 ///
 /// The following is a simple example:
 ///
@@ -71,8 +68,12 @@ public actor WebSocket {
 
     /// The maximum payload size, in bytes, of an incoming text or binary message. Defaults to `Int.max`.
     ///
-    /// If this limit is exceeded, the connection is closed with a policy violation error.
-    public var maximumIncomingMessageSize: Int = Int.max
+    /// If this limit is exceeded, the connection is closed with a policy violation error. This happens as soon as the frame header has been
+    /// received, so the endpoint does not need to waste bandwidth accepting the entire message.
+    ///
+    /// Note that when compression is used, this limit applies to the size of the *compressed* payload, which is the only size known at the start
+    /// of frame processing. To apply the limit to the decompressed payload would require receiving the entire payload and then decompressing it.
+    public var maximumIncomingMessagePayloadSize: Int = Int.max
 
     /// The maximum number of incoming bytes handled during a single receive operation. Defaults to `32768`.
     public var receiveChunkSize: Int = 32768
@@ -84,6 +85,20 @@ public actor WebSocket {
     ///
     /// This option does not apply to server-side sockets created by ``WebSocketServer``.
     public var extraHeaders: [String: String] = [:]
+
+    /// Whether to enable the `permessage-deflate` compression extension. Defaults to `true`.
+    ///
+    /// Note that setting this property to `true` does not guarantee that compression will actually be available, as both endpoints need to
+    /// support the extension and agree to use it.
+    public var enableCompression: Bool = true
+
+    /// The range of textual message sizes, in UTF-8 code units, to be compressed when the `auto` compression mode is used.
+    /// Defaults to a minimum of 8 code units with no maximum.
+    public var textAutoCompressionRange = 8..<Int.max
+
+    /// The range of binary message sizes, in bytes, to be compressed when the `auto` compression mode is used.
+    /// Defaults to a minimum of 8 bytes with no maximum.
+    public var binaryAutoCompressionRange = 8..<Int.max
 
     /// Initializes a default set of WebSocket options.
     public init() {
@@ -151,6 +166,11 @@ public actor WebSocket {
     /// The subprotocol that was negotiated by the endpoints, or `nil` if no subprotocol is in effect.
     public let subprotocol: String?
 
+    /// Whether messages may be compressed.
+    ///
+    /// This property will only be `true` if both endpoints agreed to use the `permessage-deflate` Websocket extension.
+    public let compressionAvailable: Bool
+
     /// Any HTTP headers received from the other endpoint that were not pertinent to the WebSocket handshake.
     ///
     /// The dictionary maps lowercase header names to associated values.
@@ -176,6 +196,31 @@ public actor WebSocket {
 
     // The response body if one was provided.
     public let content: Data?
+  }
+
+  /// The compression mode to use when sending a message to the other endpoint.
+  public enum CompressionMode {
+    /// The message will be compressed if the endpoints agreed to use compression during the opening handshake, and the size of the message
+    /// falls within the range defined by the `textAutoCompressionRange` or `binaryAutoCompressionRange` option, depending on
+    /// the type of message.
+    case auto
+
+    /// The message is guaranteed not to be compressed.
+    case never
+
+    /// The message will be compressed as long as the endpoints agreed to use compression during the opening handshake.
+    case always
+
+    func accepts(size: Int, range: Range<Int>) -> Bool {
+      switch self {
+        case .auto:
+          return range.contains(size)
+        case .never:
+          return false
+        case .always:
+          return true
+      }
+    }
   }
 
   /// The  status of the socket.
@@ -218,7 +263,7 @@ public actor WebSocket {
     self.url = url
     self.options = options
     outputFramer = OutputFramer(forClient: true)
-    inputFramer = InputFramer(forClient: true, maximumMessageSize: options.maximumIncomingMessageSize)
+    inputFramer = InputFramer(forClient: true, maximumMessageSize: options.maximumIncomingMessagePayloadSize)
   }
 
   /// Initializes a server-side `WebSocket`.
@@ -228,13 +273,14 @@ public actor WebSocket {
   /// - Parameter url: The URL requested by the client.
   /// - Parameter connection: The connection to the client. The server WebSocket handshake must already be complete.
   /// - Parameter handshakeResult: The result of the handshake.
+  /// - Parameter compression: The negotiated compression offer.
   /// - Parameter options: The options.
-  init(url: URL, connection: Connection, handshakeResult: HandshakeResult, options: Options) {
+  init(url: URL, connection: Connection, handshakeResult: HandshakeResult, compression: CompressionOffer?, options: Options) {
     self.url = url
     self.options = options
     self.connection = connection
-    outputFramer = OutputFramer(forClient: false)
-    inputFramer = InputFramer(forClient: false, maximumMessageSize: options.maximumIncomingMessageSize)
+    outputFramer = OutputFramer(forClient: false, compression: compression)
+    inputFramer = InputFramer(forClient: false, maximumMessageSize: options.maximumIncomingMessagePayloadSize, compression: compression)
     connection.reconfigure(with: options)
     pendingOpen = .success(.open(handshakeResult))
     readyState = .open
@@ -252,10 +298,12 @@ public actor WebSocket {
   ///
   /// If this function is called before a connection has been established, the message will be queued and sent when the socket reaches the `open` state.
   /// - Parameter text: The text to send.
+  /// - Parameter compress: The compression mode for the message.
   /// - Returns: `true` if the text was successfully submitted for transmission, or `false` if an error occurred or the connection was closed.
   @discardableResult
-  public func send(text: String) async -> Bool {
-    return await send(frame: .text(text))
+  public func send(text: String, compress: CompressionMode = .auto) async -> Bool {
+    return await send(frame: .text(text),
+                      compress: compress.accepts(size: text.utf8.count, range: options.textAutoCompressionRange))
   }
 
   /// Sends a binary message to the other endpoint.
@@ -270,10 +318,12 @@ public actor WebSocket {
   ///
   /// If this function is called before a connection has been established, the message will be queued and sent when the socket reaches the `open` state.
   /// - Parameter data: The data to send.
+  /// - Parameter compress: The compression mode for the message.
   /// - Returns: `true` if the data was successfully submitted for transmission, or `false` if an error occurred or the connection was closed.
   @discardableResult
-  public func send(data: Data) async -> Bool {
-    return await send(frame: .binary(data))
+  public func send(data: Data, compress: CompressionMode = .auto) async -> Bool {
+    return await send(frame: .binary(data),
+                      compress: compress.accepts(size: data.count, range: options.binaryAutoCompressionRange))
   }
 
   /// Sends a `ping` frame to the other endpoint.
@@ -407,8 +457,9 @@ extension WebSocket : AsyncSequence, AsyncIteratorProtocol {
 private extension WebSocket {
   /// Sends a frame or parks it for delivery once the connection enters the `open` state.
   /// - Parameter frame: The frame.
+  /// - Parameter compress: Whether to compress the frame (if possible).
   /// - Returns: Whether the frame was accepted.
-  func send(frame: Frame) async -> Bool {
+  func send(frame: Frame, compress: Bool = false) async -> Bool {
     switch readyState {
       case .initialized:
         // This is the first send request, and the application hasn't started consuming events yet, which means we're
@@ -421,12 +472,12 @@ private extension WebSocket {
           pendingOpen = .failure(error)
         }
         await result
-        return await send(frame: frame)
+        return await send(frame: frame, compress: compress)
       case .connecting:
         await finishOpeningHandshake()
-        return await send(frame: frame)
+        return await send(frame: frame, compress: compress)
       case .open:
-        return await connection!.send(multiple: outputFramer.encode(frame))
+        return await connection!.send(multiple: outputFramer.encode(frame, compress: compress))
       case .closing, .closed:
         return false
     }
@@ -469,6 +520,10 @@ private extension WebSocket {
                 continue
               case .ready(result: let result, unconsumed: let unconsumed):
                 cancelHandshakeTimer()
+                if let compression = handshake.compression {
+                  inputFramer.enableCompression(offer: compression)
+                  outputFramer.enableCompression(offer: compression)
+                }
                 inputFramer.push(unconsumed)
                 readyState = .open
                 resumeTasksWaitingForOpen()

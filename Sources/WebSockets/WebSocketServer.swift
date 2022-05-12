@@ -358,16 +358,21 @@ extension WebSocketServer {
       }
       self.server = nil             // Not strictly necessary but eliminates work in the deinitializer
 
-      let response = makeServerHandshakeResponse(to: message, subprotocol: subprotocol, extraHeaders: extraHeaders)
+      let compression = options.enableCompression ? firstValidCompressionOffer(from: message)?.respond() : nil
+      let response = makeServerHandshakeResponse(to: message, subprotocol: subprotocol, compression: compression,
+                                                 extraHeaders: extraHeaders)
       guard await connection.send(data: response.encode()),
             !response.status!.isError else {
         connection.close()
         return nil
       }
-      let handshakeResult = WebSocket.HandshakeResult(subprotocol: subprotocol, extraHeaders: message.extraHeaders)
+      let handshakeResult = WebSocket.HandshakeResult(subprotocol: subprotocol,
+                                                      compressionAvailable: compression != nil,
+                                                      extraHeaders: message.extraHeaders)
       return WebSocket(url: URL(string: message.target!)!,
                        connection: connection,
                        handshakeResult: handshakeResult,
+                       compression: compression,
                        options: options)
     }
   }
