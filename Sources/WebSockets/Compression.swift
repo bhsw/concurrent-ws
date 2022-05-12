@@ -138,8 +138,9 @@ class Deflater {
   init(offer: CompressionOffer, forClient: Bool) {
     noContextTakeover = forClient ? offer.clientNoContextTakeover == true : offer.serverNoContextTakeover == true
     let maxWindowBits = forClient ? offer.clientMaxWindowBits : offer.serverMaxWindowBits
-    precondition(deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, Int32(-(maxWindowBits?.effectiveValue ?? 15)),
-                               Int32(8), Z_DEFAULT_STRATEGY, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK)
+    let status = deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, Int32(-(maxWindowBits?.effectiveValue ?? 15)),
+                               Int32(8), Z_DEFAULT_STRATEGY, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+    precondition(status == Z_OK)
   }
 
   deinit {
@@ -162,7 +163,8 @@ class Deflater {
       stream.avail_in = UInt32(ptr.count)
       stream.next_out = result.baseAddress!
       stream.avail_out = UInt32(result.count)
-      precondition(deflate(&stream, noContextTakeover ? Z_FULL_FLUSH : Z_SYNC_FLUSH) == Z_OK)
+      let status = deflate(&stream, noContextTakeover ? Z_FULL_FLUSH : Z_SYNC_FLUSH)
+      precondition(status == Z_OK)
       // RFC 7692 requires us to drop the final 4 bytes (which are always 0x00 0x00 0xff 0xff).
       return Data(bytesNoCopy: result.baseAddress!,
                   count: result.count - Int(stream.avail_out) - 4,
@@ -186,7 +188,8 @@ class Inflater {
   /// - Parameter forClient: Whether the inflater is being used by a client (`true`) or server (`false`)
   init(offer: CompressionOffer, forClient: Bool) {
     noContextTakeover = forClient ? offer.clientNoContextTakeover == true : offer.serverNoContextTakeover == true
-    precondition(inflateInit2_(&stream, Int32(-15), ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK)
+    let status = inflateInit2_(&stream, Int32(-15), ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+    precondition(status == Z_OK)
   }
 
   deinit {
