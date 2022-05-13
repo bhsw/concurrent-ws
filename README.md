@@ -26,3 +26,70 @@ is subject to change at any time.
 * Uses the platform's `Network` framework for communication (TCP/IP and TLS layers only)
 * No third-party dependencies
 * MIT License
+
+
+## Client Usage
+
+Let's look at a basic client example:
+
+```swift
+import WebSockets
+
+let socket = WebSocket(url: URL("wss://echo.websocket.events")!)
+await socket.send(text: "Hello, world")
+do {
+  for try await event in socket {
+    switch event {
+      case .open(let handshakeResult):
+        print("Successfully opened the WebSocket: \(handshakeResult)")
+      case .text(let str):
+        print("Received text: \(str)")
+      case .close(code: let code, reason: _, wasClean: _):
+        print("Closed with code: \(code)")
+      default:
+        print("Miscellaneous event: \(event)")
+    }
+  }
+} catch {
+  print("An error occurred connecting to the remote endpoint: \(error)")
+}
+```
+
+A `WebSocket` actor is an `AsyncSequence` containing events that you iterate using
+a `for try await` loop. Events include notifications that the connection was
+established successfully, that a message was received from the remote endpoint, or
+that a disconnect occurred. In fact, iterating over these events is what drives the
+operation of the WebSocket. For this reason, you will need to spin up a separate
+`Task` to service the events for each WebSocket managed by your application. While
+handling events is restricted to a single task, the rest of the API can be called
+from any task. For example, it is particularly common to call a WebSocket's `send`
+or `close` functions in response to a user interface event.
+
+After initializing a `WebSocket`, no connection attempt is actually made until you
+either ask to send a message to the remote endpoint or start consuming events.
+An error will be thrown if a connection cannot be established. Otherwise, the first
+event produced will be an `open` event, after which the WebSocket is guaranteed not
+to throw any errors; if an error occurs after the WebSocket reaches the `open`
+state, it is reported as `close` event with an appropriate `CloseCode`.
+
+The event stream always ends with a `close` event. Once that event is consumed, the
+event processing loop will complete.
+
+
+## Server Usage
+
+The `WebSocketServer` actor works similarly becuase it is also an `AsyncSequence`.
+The primary event produced by the server is a `request` event, which includes a
+reference to a `WebSocketServer.Request` object that describes an HTTP 1.1
+request from a client. Based on the information conveyed by the request, your
+server application can send a normal HTTP response or attempt to upgrade the
+connection to a WebSocket.
+
+A successful upgrade returns a `WebSocket` actor that can then be used to
+communicate with the client. WebSockets returned by the server are guaranteed
+to never throw errors, because they are already in the `open` state by the
+time they are made available to the application.
+
+The `Sources/Examples` directory of the source respository contains an
+example of a server (`EchoServer.swift`) that uses this API. 
+
