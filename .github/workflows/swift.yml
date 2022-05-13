@@ -1,8 +1,5 @@
 name: Swift
 
-env:
-  DEVELOPER_DIR: /Applications/Xcode_13.3.app
-
 on:
   push:
     branches: [ main ]
@@ -12,7 +9,7 @@ on:
 jobs:
   build:
 
-    runs-on: macos-latest
+    runs-on: macOS-12
 
     steps:
     - uses: actions/checkout@v3
