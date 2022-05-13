@@ -1,7 +1,7 @@
 name: Swift
 
 env:
-  DEVELOPER_DIR: /Applications/Xcode_13.3.app/Contents/Developer
+  DEVELOPER_DIR: /Applications/Xcode_13.3.1.app/Contents/Developer
 
 on:
   push:
