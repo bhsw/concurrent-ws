@@ -15,3 +15,14 @@ func randomData(size: Int) -> Data {
   }
   return Data(bytes)
 }
+
+func patternData(size: Int) -> Data {
+  var bytes: [UInt8] = []
+  bytes.reserveCapacity(size)
+  var index = 0
+  while index < size {
+    bytes.append(UInt8(index & 255))
+    index &+= 1
+  }
+  return Data(bytes)
+}

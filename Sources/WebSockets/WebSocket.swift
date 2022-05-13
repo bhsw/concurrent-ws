@@ -94,10 +94,14 @@ public actor WebSocket {
 
     /// The range of textual message sizes, in UTF-8 code units, to be compressed when the `auto` compression mode is used.
     /// Defaults to a minimum of 8 code units with no maximum.
+    ///
+    /// Note that this range applies only to messages *sent* by the local endpoint. The remote endpoint controls its own use of compression.
     public var textAutoCompressionRange = 8..<Int.max
 
     /// The range of binary message sizes, in bytes, to be compressed when the `auto` compression mode is used.
     /// Defaults to a minimum of 8 bytes with no maximum.
+    ///
+    /// Note that this range applies only to messages *sent* by the local endpoint. The remote endpoint controls its own use of compression.
     public var binaryAutoCompressionRange = 8..<Int.max
 
     /// Initializes a default set of WebSocket options.
@@ -220,6 +224,57 @@ public actor WebSocket {
         case .always:
           return true
       }
+    }
+  }
+
+  /// Statistics about data sent or received by a WebSocket.
+  ///
+  /// Note that these counters will wrap if they overflow. The fact that they're stored as 64-bit  integers makes that unlikely, but in very extreme use cases, it
+  /// might be necessary to call ``WebSocket/resetStatistics()`` to sample and reset the statistics at regular intervals if accurate metrics are required.
+  public struct Statistics: Equatable {
+    /// The number of control frames transferred.
+    ///
+    /// This total includes `ping`, `pong`, and `close` frames.
+    public var controlFrameCount: Int64 = 0
+
+    /// The number of textual messages transferred.
+    public var textMessageCount: Int64 = 0
+
+    /// The number of binary messages transferred.
+    public var binaryMessageCount: Int64 = 0
+
+    /// The total number of textual message payload bytes transferred.
+    public var textBytesTransferred: Int64 = 0
+
+    /// The total number of binary message payload bytes transferred.
+    public var binaryBytesTransferred: Int64 = 0
+
+    /// The number of compressed textual messages transferred.
+    public var compressedTextMessageCount: Int64 = 0
+
+    /// The total number of compressed textual message payload bytes transferred.
+    public var compressedTextBytesTransferred: Int64 = 0
+
+    /// The total number of textual message payload bytes that did not need to be transferred due to compression.
+    ///
+    /// This counter may be negative if compression is actually *increasing* the aggregate payload size. This would be an unexpected outcome for
+    /// text but would indicate that compression should probably be disabled for that particular use caes.
+    public var compressedTextBytesSaved: Int64 = 0
+
+    /// The number of compressed binary messages transferred.
+    public var compressedBinaryMessageCount: Int64 = 0
+
+    /// The total number of compressed binary message payload bytes transferred.
+    public var compressedBinaryBytesTransferred: Int64 = 0
+
+    /// The total number of binary message payload bytes that did not need to be transferred due to compression.
+    ///
+    /// This counter may be negative if compression is actually *increasing* the aggregate payload size. This often indicates that pre-compressed data,
+    /// such as an image or video, is being transferred without disabling WebSocket compression for at least those types of messages.
+    public var compressedBinaryBytesSaved: Int64 = 0
+
+    // Initializes all counters to 0
+    public init() {
     }
   }
 
@@ -408,6 +463,23 @@ public actor WebSocket {
       case .closing, .closed:
         break
     }
+  }
+
+  /// Statistics about data received by the WebSocket.
+  public var inputStatistics: Statistics {
+    inputFramer.statistics
+  }
+
+  /// Statistics about data sent by the WebSocket.
+  public var outputStatistics: Statistics {
+    outputFramer.statistics
+  }
+
+  /// Resets input and output statistics, setting all counters to 0.
+  /// - Returns: The input and output statistics just prior to the reset.
+  ///
+  public func resetStatistics() -> (Statistics, Statistics) {
+    return (inputFramer.resetStatistics(), outputFramer.resetStatistics())
   }
 }
 

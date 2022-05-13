@@ -14,6 +14,165 @@ class WebSocketTests: XCTestCase {
   override func tearDownWithError() throws {
   }
 
+  func testTextMessage() async throws {
+    let server = TestServer()
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    let url = try await server.start(path: "/test")
+    let socket = WebSocket(url: url)
+    await socket.send(text: "Hello, world")
+    let longText = String(repeating: "Hello, world. ", count: 1000)
+    await socket.send(text: longText)
+    await socket.close()
+    var events = [WebSocket.Event]()
+    for try await event in socket {
+      events.append(event)
+    }
+    let expectedEvents: [WebSocket.Event] = [
+      .open(.init(subprotocol: nil, compressionAvailable: true, extraHeaders: [:])),
+      .text("Hello, world"),
+      .text(longText),
+      .close(code: .normalClosure, reason: "", wasClean: true)
+    ]
+    XCTAssertEqual(events, expectedEvents)
+
+    let inStats = await socket.inputStatistics, outStats = await socket.outputStatistics
+    var expectedStats = WebSocket.Statistics()
+    expectedStats.controlFrameCount = 1
+    expectedStats.textMessageCount = 2
+    expectedStats.textBytesTransferred = 66
+    expectedStats.compressedTextMessageCount = 2
+    expectedStats.compressedTextBytesTransferred = 66
+    expectedStats.compressedTextBytesSaved = 13946
+    XCTAssertEqual(inStats, expectedStats)
+    XCTAssertEqual(outStats, expectedStats)
+  }
+
+  func testTextMessageNoCompression() async throws {
+    let server = TestServer()
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    let url = try await server.start(path: "/test")
+    var options = WebSocket.Options()
+    options.enableCompression = false
+    let socket = WebSocket(url: url, options: options)
+    await socket.send(text: "Hello, world")
+    let longText = String(repeating: "Hello, world. ", count: 1000)
+    await socket.send(text: longText)
+    await socket.close()
+    var events = [WebSocket.Event]()
+    for try await event in socket {
+      events.append(event)
+    }
+    let expectedEvents: [WebSocket.Event] = [
+      .open(.init(subprotocol: nil, compressionAvailable: false, extraHeaders: [:])),
+      .text("Hello, world"),
+      .text(longText),
+      .close(code: .normalClosure, reason: "", wasClean: true)
+    ]
+    XCTAssertEqual(events, expectedEvents)
+
+    let inStats = await socket.inputStatistics, outStats = await socket.outputStatistics
+    var expectedStats = WebSocket.Statistics()
+    expectedStats.controlFrameCount = 1
+    expectedStats.textMessageCount = 2
+    expectedStats.textBytesTransferred = 14012
+    expectedStats.compressedTextMessageCount = 0
+    expectedStats.compressedTextBytesTransferred = 0
+    expectedStats.compressedTextBytesSaved = 0
+    XCTAssertEqual(inStats, expectedStats)
+    XCTAssertEqual(outStats, expectedStats)
+  }
+
+  func testTextMessageLimitedCompression() async throws {
+    let server = TestServer()
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    let url = try await server.start(path: "/test")
+    var options = WebSocket.Options()
+    options.textAutoCompressionRange = 8..<1000
+    let socket = WebSocket(url: url, options: options)
+    await socket.send(text: "Hello, world")
+    let longText = String(repeating: "Hello, world. ", count: 1000)
+    await socket.send(text: longText)
+    await socket.close()
+    var events = [WebSocket.Event]()
+    for try await event in socket {
+      events.append(event)
+    }
+    let expectedEvents: [WebSocket.Event] = [
+      .open(.init(subprotocol: nil, compressionAvailable: true, extraHeaders: [:])),
+      .text("Hello, world"),
+      .text(longText),
+      .close(code: .normalClosure, reason: "", wasClean: true)
+    ]
+    XCTAssertEqual(events, expectedEvents)
+
+    let inStats = await socket.inputStatistics, outStats = await socket.outputStatistics
+    var expectedStats = WebSocket.Statistics()
+    expectedStats.controlFrameCount = 1
+    expectedStats.textMessageCount = 2
+    expectedStats.textBytesTransferred = 14014
+    expectedStats.compressedTextMessageCount = 1
+    expectedStats.compressedTextBytesTransferred = 14
+    expectedStats.compressedTextBytesSaved = -2
+    XCTAssertEqual(outStats, expectedStats)
+    expectedStats.textBytesTransferred = 66
+    expectedStats.compressedTextMessageCount = 2
+    expectedStats.compressedTextBytesTransferred = 66
+    expectedStats.compressedTextBytesSaved = 13946
+    XCTAssertEqual(inStats, expectedStats)
+  }
+
+  func testBinaryMessage() async throws {
+    let server = TestServer()
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    let url = try await server.start(path: "/test")
+    let socket = WebSocket(url: url)
+    let payload1 = patternData(size: 999), payload2 = patternData(size: 9999), payload3 = randomData(size: 999)
+    await socket.send(data: payload1)
+    await socket.send(data: payload2)
+    await socket.send(data: payload3)
+    await socket.close()
+    var events = [WebSocket.Event]()
+    for try await event in socket {
+      events.append(event)
+    }
+    let expectedEvents: [WebSocket.Event] = [
+      .open(.init(subprotocol: nil, compressionAvailable: true, extraHeaders: [:])),
+      .binary(payload1),
+      .binary(payload2),
+      .binary(payload3),
+      .close(code: .normalClosure, reason: "", wasClean: true)
+    ]
+    XCTAssertEqual(events, expectedEvents)
+
+    let inStats = await socket.inputStatistics, outStats = await socket.outputStatistics
+    var expectedStats = WebSocket.Statistics()
+    expectedStats.controlFrameCount = 1
+    expectedStats.binaryMessageCount = 3
+    expectedStats.binaryBytesTransferred = 1344
+    expectedStats.compressedBinaryMessageCount = 3
+    expectedStats.compressedBinaryBytesTransferred = 1344
+    expectedStats.compressedBinaryBytesSaved = 10653
+    XCTAssertEqual(inStats, expectedStats)
+    XCTAssertEqual(outStats, expectedStats)
+  }
+
+
   func testPingOnLocalServer() async throws {
     let server = TestServer()
     defer {
@@ -363,6 +522,14 @@ class WebSocketTests: XCTestCase {
     try await expectCloseCode(quirk: .sendInvalidPayloadLength, code: .protocolError, reason: "Invalid payload length")
   }
 
+  func testInvalidCompressionDatafromServerFailsConnection() async throws {
+    try await expectCloseCode(quirk: .sendInvalidCompressedMessage, code: .protocolError, reason: "Invalid compressed data")
+  }
+
+  func testInvalidCompressedOpcodeFromServerFailsConnection() async throws {
+    try await expectCloseCode(quirk: .sendInvalidCompressedOpcode, code: .protocolError, reason: "Forbidden opcode for compression")
+  }
+
   func testFragmentedMessageFromServer() async throws {
     let server = QuirkyTestServer(with: .sendFragmentedMessage)
     defer {
@@ -377,7 +544,7 @@ class WebSocketTests: XCTestCase {
       events.append(event)
     }
     let expected: [WebSocket.Event] = [
-      .open(.init(subprotocol: nil, compressionAvailable: false, extraHeaders: [:])),
+      .open(.init(subprotocol: nil, compressionAvailable: true, extraHeaders: [:])),
       .text("Hello, world."),
       .close(code: .goingAway, reason: "", wasClean: false)         // Quirky server disconnects right after sending close frame
     ]

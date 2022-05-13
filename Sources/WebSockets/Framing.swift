@@ -82,6 +82,7 @@ internal enum PolicyViolation: Error, CustomDebugStringConvertible {
 internal struct OutputFramer {
   private let isClient: Bool
   private var deflater: Deflater? = nil
+  private(set) var statistics = WebSocket.Statistics()
 
   init(forClient isClient: Bool, compression: CompressionOffer? = nil) {
     self.isClient = isClient
@@ -94,12 +95,34 @@ internal struct OutputFramer {
     let key: UInt32? = isClient ? UInt32.random(in: 1..<UInt32.max) : nil
     switch frame {
       case .text(let text):
-        return encode(as: .text, payload: text.data(using: .utf8)!, using: key, compress: compress)
-      case .binary(let data):
-        return encode(as: .binary, payload: data, using: key, compress: compress)
+        statistics.textMessageCount &+= 1
+        let payload = text.data(using: .utf8)!
+        if compress && !payload.isEmpty && deflater != nil {
+          let compressedPayload = deflater!.compress(payload)
+          statistics.compressedTextBytesSaved &+= Int64(payload.count - compressedPayload.count)
+          statistics.compressedTextMessageCount &+= 1
+          statistics.textBytesTransferred &+= Int64(compressedPayload.count)
+          statistics.compressedTextBytesTransferred &+= Int64(compressedPayload.count)
+          return encode(as: .text, payload: compressedPayload, using: key, compressed: true)
+        }
+        statistics.textBytesTransferred &+= Int64(payload.count)
+        return encode(as: .text, payload: payload, using: key, compressed: false)
+      case .binary(let payload):
+        statistics.binaryMessageCount &+= 1
+        if compress && !payload.isEmpty && deflater != nil {
+          let compressedPayload = deflater!.compress(payload)
+          statistics.compressedBinaryBytesSaved &+= Int64(payload.count - compressedPayload.count)
+          statistics.compressedBinaryMessageCount &+= 1
+          statistics.binaryBytesTransferred &+= Int64(compressedPayload.count)
+          statistics.compressedBinaryBytesTransferred &+= Int64(compressedPayload.count)
+          return encode(as: .binary, payload: compressedPayload, using: key, compressed: true)
+        }
+        statistics.binaryBytesTransferred &+= Int64(payload.count)
+        return encode(as: .binary, payload: payload, using: key, compressed: false)
       case .close(let code, let reason):
-        var data = Data()
-        data.appendBigEndian(code.rawValue)
+        statistics.controlFrameCount += 1
+        var payload = Data()
+        payload.appendBigEndian(code.rawValue)
         var reasonBytes = reason.data(using: .utf8)!
         if reasonBytes.count > maxCloseReasonSize {
           // Truncate the UTF-8 data if it exceeds the space available.
@@ -109,11 +132,13 @@ internal struct OutputFramer {
             reasonBytes.removeLast()
           }
         }
-        data.append(reasonBytes)
-        return encode(as: .close, payload: data, using: key)
+        payload.append(reasonBytes)
+        return encode(as: .close, payload: payload, using: key)
       case .ping(let data):
+        statistics.controlFrameCount += 1
         return encode(as: .ping, payload: data.count <= maxControlPayloadSize ? data : data[0..<maxControlPayloadSize], using: key)
       case .pong(let data):
+        statistics.controlFrameCount += 1
         return encode(as: .pong, payload: data.count <= maxControlPayloadSize ? data : data[0..<maxControlPayloadSize], using: key)
       default:
         // The other frame types are errors emitted by the input framer; they cannot be encoded.
@@ -126,12 +151,16 @@ internal struct OutputFramer {
     deflater = Deflater(offer: offer, forClient: isClient)
   }
 
+  mutating func resetStatistics() -> WebSocket.Statistics {
+    let old = statistics
+    statistics = WebSocket.Statistics()
+    return old
+  }
+
   private mutating func encode(as opcode: Opcode, payload: Data, using maskKey: UInt32? = nil,
-                               compress: Bool = false, fin: Bool = true) -> [Data] {
-    let rsv1 = compress && deflater != nil && opcode.isMessageStart
-    let payload = rsv1 ? deflater!.compress(payload) : payload
+                               compressed: Bool = false, fin: Bool = true) -> [Data] {
     var header = Data(capacity: maxHeaderSize + payload.count)
-    header.append((opcode.rawValue & 0xf) | (fin ? 0x80 : 0) | (rsv1 ? 0x40 : 0))
+    header.append((opcode.rawValue & 0xf) | (fin ? 0x80 : 0) | (compressed ? 0x40 : 0))
     let maskBit: UInt8 = maskKey != nil ? 0x80 : 0
     switch payload.count {
       case 0...125:
@@ -172,6 +201,7 @@ internal struct InputFramer {
   private var frames: [Frame] = []
   private var fatal = false
   private var inflater: Inflater? = nil
+  private(set) var statistics = WebSocket.Statistics()
 
   init(forClient isClient: Bool, maximumMessageSize: Int, compression: CompressionOffer? = nil) {
     self.isClient = isClient
@@ -344,6 +374,12 @@ internal struct InputFramer {
     inflater = Inflater(offer: offer, forClient: isClient)
   }
 
+  mutating func resetStatistics() -> WebSocket.Statistics {
+    let old = statistics
+    statistics = WebSocket.Statistics()
+    return old
+  }
+
   private mutating func acceptPayloadLength() -> Bool {
     if opcode!.isMessage {
       let remaining = maximumMessageSize - (messagePayload?.count ?? 0)
@@ -378,30 +414,51 @@ internal struct InputFramer {
       return decodeFrame(of: opcode, payload: payload)
     }
     compressed = false
-    guard let result = try? decodeFrame(of: opcode, payload: inflater!.decompress(payload)) else {
+    guard let result = try? decodeFrame(of: opcode, payload: inflater!.decompress(payload), compressedSize: payload.count) else {
       return .protocolError(.invalidCompressedData)
     }
     return result
   }
 
-  private func decodeFrame(of opcode: Opcode, payload: Data) -> Frame {
+  private mutating func decodeFrame(of opcode: Opcode, payload: Data, compressedSize: Int? = nil) -> Frame {
     switch opcode {
       case .text:
+        statistics.textMessageCount &+= 1
+        if let compressedSize = compressedSize {
+          statistics.compressedTextMessageCount &+= 1
+          statistics.textBytesTransferred &+= Int64(compressedSize)
+          statistics.compressedTextBytesTransferred &+= Int64(compressedSize)
+          statistics.compressedTextBytesSaved &+= Int64(payload.count - compressedSize)
+        } else {
+          statistics.textBytesTransferred &+= Int64(payload.count)
+        }
         guard let text = String(bytes: payload, encoding: .utf8) else {
           return .protocolError(.invalidUTF8)
         }
         return .text(text)
       case .binary:
+        statistics.binaryMessageCount &+= 1
+        if let compressedSize = compressedSize {
+          statistics.compressedBinaryMessageCount &+= 1
+          statistics.binaryBytesTransferred &+= Int64(compressedSize)
+          statistics.compressedBinaryBytesTransferred &+= Int64(compressedSize)
+          statistics.compressedBinaryBytesSaved &+= Int64(payload.count - compressedSize)
+        } else {
+          statistics.binaryBytesTransferred &+= Int64(payload.count)
+        }
         return .binary(payload)
       case .close:
+        statistics.controlFrameCount &+= 1
         let code: UInt16 = payload.count >= 2 ? (UInt16(payload[0]) << 8) | UInt16(payload[1]) : 1005
         guard let reason = String(bytes: payload.count >= 2 ? payload[2...] : payload, encoding: .utf8) else {
           return .protocolError(.invalidUTF8)
         }
         return .close(.init(rawValue: code), reason)
       case .ping:
+        statistics.controlFrameCount &+= 1
         return .ping(payload)
       case .pong:
+        statistics.controlFrameCount &+= 1
         return .pong(payload)
       default:
         return .protocolError(.invalidOpcode)

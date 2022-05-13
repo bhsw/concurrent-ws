@@ -40,7 +40,7 @@ internal final class ClientHandshake {
     }
     request.addWebSocketVersion(supportedWebSocketVersion)
     if options.enableCompression {
-      let offer = CompressionOffer(clientNoContextTakeover: true)
+      let offer = CompressionOffer()
       request.addWebSocketExtension(offer.token)
     }
     request.extraHeaders = options.extraHeaders
@@ -74,7 +74,7 @@ internal final class ClientHandshake {
         throw WebSocketError.subprotocolMismatch
       }
       if !message.webSocketExtensions.isEmpty {
-        guard options.enableCompression else {
+        guard options.enableCompression && message.webSocketExtensions.count == 1 else {
           throw WebSocketError.extensionMismatch
         }
         guard let offer = CompressionOffer(from: message.webSocketExtensions.first!) else {

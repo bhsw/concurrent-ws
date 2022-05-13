@@ -18,6 +18,8 @@ actor QuirkyTestServer {
     case sendNonzeroReservedBits
     case sendInvalidPayloadLength
     case sendFragmentedMessage
+    case sendInvalidCompressedMessage
+    case sendInvalidCompressedOpcode
   }
 
   let quirk: Quirk
@@ -80,7 +82,11 @@ actor QuirkyTestServer {
   }
 
   private func handle(message: HTTPMessage, on connection: Connection) async {
-    var response = makeServerHandshakeResponse(to: message, subprotocol: nil)
+    var compression: CompressionOffer?
+    if !message.webSocketExtensions.isEmpty {
+      compression = CompressionOffer(from: message.webSocketExtensions.first!)?.respond()
+    }
+    var response = makeServerHandshakeResponse(to: message, subprotocol: nil, compression: compression)
     switch quirk {
       case .incorrectKey:
         response.webSocketAccept! += "x"
@@ -111,7 +117,7 @@ actor QuirkyTestServer {
         let frame: [UInt8] = [ 0x00, 0x01, 0x00 ]
         await connection.send(data: Data(frame))
       case .sendNonzeroReservedBits:
-        let frame: [UInt8] = [ 0xc2, 0x01, 0x00 ]
+        let frame: [UInt8] = [ 0xa2, 0x01, 0x00 ]
         await connection.send(data: Data(frame))
       case .sendInvalidPayloadLength:
         let frame: [UInt8] = [ 0x82, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff ]
@@ -121,6 +127,12 @@ actor QuirkyTestServer {
                                0x00, 0x02, 0x2c, 0x20,                                  // .text(", ")
                                0x80, 0x06, 0x77, 0x6f, 0x72, 0x6c, 0x64, 0x2e,          // .text("world.")
                                0x88, 0x02, 0x03, 0xe9 ]                                 // .close(.goingAway)
+        await connection.send(data: Data(frame))
+      case .sendInvalidCompressedMessage:
+        let frame: [UInt8] = [ 0xc2, 0x05, 0x05, 0x04, 0x03, 0x02, 0x01 ]
+        await connection.send(data: Data(frame))
+      case .sendInvalidCompressedOpcode:
+        let frame: [UInt8] = [ 0xc9, 0x00 ]
         await connection.send(data: Data(frame))
       default:
         break
