@@ -78,18 +78,49 @@ event processing loop will complete.
 
 ## Server Usage
 
+The following is a simple WebSocket server that accepts connections on port `8080`
+and echoes back any text message received from a client:
+
+```swift
+let server = WebSocketServer(on: 8080)
+for try await event in server {
+  switch event {
+    case .request(let request):
+      guard let socket = await request.upgrade() else {
+        break
+      }
+      Task {
+        await socket.send(text: "Welcome to the echo server.")
+        for try await event in socket {
+          switch event {
+            case .text(let string):
+              await socket.send(text: string)
+            default:
+              break
+          }        
+        }
+      }
+    default:
+      break
+  }
+}
+```
+
 The `WebSocketServer` actor works similarly becuase it is also an `AsyncSequence`.
 The primary event produced by the server is a `request` event, which includes a
 reference to a `WebSocketServer.Request` object that describes an HTTP 1.1
 request from a client. Based on the information conveyed by the request, your
 server application can send a normal HTTP response or attempt to upgrade the
-connection to a WebSocket.
+connection to a WebSocket. The example above requires every request to be
+an upgrade request. Anything else will receive a `400 Bad Request` response.
 
 A successful upgrade returns a `WebSocket` actor that can then be used to
 communicate with the client. WebSockets returned by the server are guaranteed
 to never throw errors, because they are already in the `open` state by the
-time they are made available to the application.
+time they are made available to the application. Notice that communication with
+each WebSocket is performed within its own `Task`. Without that, the server would
+upgrade a single connection and then stop accepting further connections until
+that first WebSocket was closed.
 
-The `Sources/Examples` directory of the source respository contains an
-example of a server (`EchoServer.swift`) that uses this API. 
-
+The `Sources/Examples` directory of the respository contains a much more
+elaborate echo server.
