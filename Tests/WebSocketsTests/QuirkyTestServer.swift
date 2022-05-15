@@ -82,9 +82,9 @@ actor QuirkyTestServer {
   }
 
   private func handle(message: HTTPMessage, on connection: Connection) async {
-    var compression: CompressionOffer?
+    var compression: DeflateParameters?
     if !message.webSocketExtensions.isEmpty {
-      compression = CompressionOffer(from: message.webSocketExtensions.first!)?.respond()
+      compression = DeflateParameters(from: message.webSocketExtensions.first!)
     }
     var response = makeServerHandshakeResponse(to: message, subprotocol: nil, compression: compression)
     switch quirk {

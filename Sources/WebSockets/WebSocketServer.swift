@@ -8,30 +8,16 @@ import Foundation
 /// `WebSocketServer` is a an `AsyncSequence` that allows you to iterate over and react to events that occur on the server, such as incoming
 /// HTTP requests and network status notifications. Each server should have a single, dedicated `Task` that processes events from that server.
 /// However, the rest of the API, such as ``WebSocketServer/stop()`` is designed to be used from any task or thread.
-///
-/// The following is a minimal example that simply responds to any HTTP request with a diagnostic message:
-///
-/// ```swift
-/// let server = WebSocketServer(on: 8080)
-///   for try await event in server {
-///     switch event {
-///       case .ready:
-///         print("Ready to accept requests")
-///       case .request(let request):
-///         await request.respond(with: .ok,
-///           plainText: "\(request.method) on \(request.target)\n")
-///       case .networkUnavailable:
-///         print("The network is unavailable")
-///     }
-///   }
-/// ```
-///
-/// See the `EchoServer` example in the source distribution for a more extensive demonstration of the API.
 public actor WebSocketServer {
   /// Options that can be set for a `WebSocketServer` instance.
   public struct Options {
     /// The  number of seconds that the server will wait for an incoming connection to send an HTTP request before dropping the connection. Defaults to `30`.
     public var requestTimeout: TimeInterval = 30
+
+    /// The secure identity of the local server.
+    ///
+    /// If this option is not `nil`, TLS will be required for all connections to the server.
+    public var identity: SecIdentity? = nil
 
     /// Initializes a default set of server options.
     public init() {
@@ -60,7 +46,7 @@ public actor WebSocketServer {
   /// - Parameter port: The port. If `0`, an unused one will be assigned by the system.
   /// - Parameter options: Server options.
   public init(on port: UInt16 = 0, options: Options = Options()) {
-    listener = Listener(port: port)
+    listener = Listener(port: port, identity: options.identity)
     self.options = options
   }
 
@@ -358,7 +344,7 @@ extension WebSocketServer {
       }
       self.server = nil             // Not strictly necessary but eliminates work in the deinitializer
 
-      let compression = options.enableCompression ? firstValidCompressionOffer(from: message)?.respond() : nil
+      let compression = options.enableCompression ? firstValidPerMessageDeflateOffer(from: message) : nil
       let response = makeServerHandshakeResponse(to: message, subprotocol: subprotocol, compression: compression,
                                                  extraHeaders: extraHeaders)
       guard await connection.send(data: response.encode()),

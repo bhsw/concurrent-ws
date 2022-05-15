@@ -231,19 +231,20 @@ extension HTTPMessage {
               currentLine.append(c)
             }
           case .contentWithLength, .chunkData:
-            // TODO: process more than a byte at a time here
-            message!.content!.append(c)
-            remainingLength -= 1
+            let count = min(remainingLength, data.endIndex - index)
+            message!.content!.append(data[index..<index + count])
+            remainingLength -= count
+            index += count
             if remainingLength == 0 {
               state = state == .contentWithLength ? .complete : .chunkLength
             }
+            continue
           case .unboundedContent:
-            // TODO: process more than a byte at a time here
-            message!.content!.append(c)
-
+            message!.content!.append(data[index...])
+            index = data.endIndex
+            continue
           case .invalid:
             return .invalid
-
           case .complete:
             return .complete(message!, unconsumed: data[index...])
         }

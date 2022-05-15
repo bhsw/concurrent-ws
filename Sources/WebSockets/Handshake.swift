@@ -21,7 +21,7 @@ internal final class ClientHandshake {
   private var options: WebSocket.Options
   private var expectedKey: String? = nil
   private var parser = HTTPMessage.Parser()
-  private(set) var compression: CompressionOffer?
+  private(set) var compression: DeflateParameters?
 
   init(options: WebSocket.Options) {
     self.options = options
@@ -40,7 +40,7 @@ internal final class ClientHandshake {
     }
     request.addWebSocketVersion(supportedWebSocketVersion)
     if options.enableCompression {
-      let offer = CompressionOffer()
+      let offer = DeflateParameters()
       request.addWebSocketExtension(offer.token)
     }
     request.extraHeaders = options.extraHeaders
@@ -77,7 +77,7 @@ internal final class ClientHandshake {
         guard options.enableCompression && message.webSocketExtensions.count == 1 else {
           throw WebSocketError.extensionMismatch
         }
-        guard let offer = CompressionOffer(from: message.webSocketExtensions.first!) else {
+        guard let offer = DeflateParameters(from: message.webSocketExtensions.first!) else {
           throw WebSocketError.extensionMismatch
         }
         compression = offer
@@ -106,7 +106,7 @@ internal final class ClientHandshake {
 
 // MARK: Server handshake
 
-internal func makeServerHandshakeResponse(to request: HTTPMessage, subprotocol: String?, compression: CompressionOffer? = nil,
+internal func makeServerHandshakeResponse(to request: HTTPMessage, subprotocol: String?, compression: DeflateParameters? = nil,
                                           extraHeaders: [String: String] = [:]) -> HTTPMessage {
   guard request.version >= .v1_1 else {
     return failedUpgrade(text: "A WebSocket upgrade requires HTTP version 1.1 or greater")

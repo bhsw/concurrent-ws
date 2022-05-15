@@ -1,11 +1,10 @@
-# concurrent-websockets
+# concurrent-ws
 
 An implementation of WebSockets ([RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455)) for Swift 5.5 and above,
 featuring an API based on Swift Concurrency (tasks and async/await). The minimum supported platforms are macOS 10.15+
 (Catalina) and iOS 15+.
 
-**IMPORTANT**: This software should be considered alpha-quality at this time. Tests are still being added, and the API
-is subject to change at any time.
+**IMPORTANT**: This software should be considered alpha-quality at this time, as the API is subject to change at any time.
 
 
 ## Features

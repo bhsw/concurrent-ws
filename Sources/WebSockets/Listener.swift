@@ -20,13 +20,20 @@ final class Listener: AsyncSequence {
   private var continuation: StreamType.Continuation!
   private var listener: NWListener?
 
-  init(port: UInt16) {
+  init(port: UInt16, identity: SecIdentity? = nil) {
     dispatchQueue = DispatchQueue(label: "WebSocket listener on port \(port)")
     stream = AsyncThrowingStream { continuation in
       self.continuation = continuation
     }
 
-    let params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+    let params: NWParameters
+    if let secIdentity = identity, let identity = sec_identity_create(secIdentity) {
+      let tls = NWProtocolTLS.Options()
+      sec_protocol_options_set_local_identity(tls.securityProtocolOptions, identity)
+      params = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+    } else {
+      params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+    }
     params.allowLocalEndpointReuse = true
     params.includePeerToPeer = true
 

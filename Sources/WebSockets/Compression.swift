@@ -6,7 +6,7 @@ import zlib
 
 // MARK: Negotiation
 
-internal struct CompressionOffer {
+internal struct DeflateParameters {
   enum WindowBits {
     case empty
     case value(Int)
@@ -100,12 +100,6 @@ internal struct CompressionOffer {
     return token
   }
 
-  func respond() -> CompressionOffer {
-    return CompressionOffer(serverNoContextTakeover: serverNoContextTakeover,
-                            serverMaxWindowBits: serverMaxWindowBits,
-                            clientNoContextTakeover: clientNoContextTakeover)
-  }
-
   private struct Keys {
     static let perMessageDeflate = "permessage-deflate"
     static let serverNoContextTakeover = "server_no_context_takeover"
@@ -115,9 +109,9 @@ internal struct CompressionOffer {
   }
 }
 
-internal func firstValidCompressionOffer(from request: HTTPMessage) -> CompressionOffer? {
+internal func firstValidPerMessageDeflateOffer(from request: HTTPMessage) -> DeflateParameters? {
   for token in request.webSocketExtensions {
-    if let offer = CompressionOffer(from: token) {
+    if let offer = DeflateParameters(from: token) {
       return offer
     }
   }
@@ -135,7 +129,7 @@ class Deflater {
   /// Initializes the compressor.
   /// - Parameter offer: The accepted compression offer.
   /// - Parameter forClient: Whether the deflater is being used by a client (`true`) or server (`false`)
-  init(offer: CompressionOffer, forClient: Bool) {
+  init(offer: DeflateParameters, forClient: Bool) {
     noContextTakeover = forClient ? offer.clientNoContextTakeover == true : offer.serverNoContextTakeover == true
     let maxWindowBits = forClient ? offer.clientMaxWindowBits : offer.serverMaxWindowBits
     let status = deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, Int32(-(maxWindowBits?.effectiveValue ?? 15)),
@@ -186,7 +180,7 @@ class Inflater {
   /// Initializes the compressor.
   /// - Parameter offer: The accepted compression offer.
   /// - Parameter forClient: Whether the inflater is being used by a client (`true`) or server (`false`)
-  init(offer: CompressionOffer, forClient: Bool) {
+  init(offer: DeflateParameters, forClient: Bool) {
     noContextTakeover = forClient ? offer.clientNoContextTakeover == true : offer.serverNoContextTakeover == true
     let status = inflateInit2_(&stream, Int32(-15), ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
     precondition(status == Z_OK)

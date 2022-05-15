@@ -12,13 +12,13 @@ internal enum Frame {
   case ping(Data)
   case pong(Data)
   case protocolError(ProtocolError)
-  case policyViolation(PolicyViolation)
+  case messageTooBig
 
   var isError: Bool {
     switch self {
       case .protocolError(_):
         return true
-      case .policyViolation(_):
+      case .messageTooBig:
         return true
       default:
         return false
@@ -59,20 +59,6 @@ internal enum ProtocolError: Error, CustomDebugStringConvertible {
         return "Forbidden opcode for compression"
       case .invalidCompressedData:
         return "Invalid compressed data"
-
-    }
-  }
-}
-
-// MARK: PolicyViolation
-
-internal enum PolicyViolation: Error, CustomDebugStringConvertible {
-  case maximumMessageSizeExceeded
-
-  var debugDescription: String {
-    switch self {
-      case .maximumMessageSizeExceeded:
-        return "Maximum message size exceeded"
     }
   }
 }
@@ -84,7 +70,7 @@ internal struct OutputFramer {
   private var deflater: Deflater? = nil
   private(set) var statistics = WebSocket.Statistics()
 
-  init(forClient isClient: Bool, compression: CompressionOffer? = nil) {
+  init(forClient isClient: Bool, compression: DeflateParameters? = nil) {
     self.isClient = isClient
     if let compression = compression {
       deflater = Deflater(offer: compression, forClient: isClient)
@@ -146,15 +132,13 @@ internal struct OutputFramer {
     }
   }
 
-  mutating func enableCompression(offer: CompressionOffer) {
+  mutating func enableCompression(offer: DeflateParameters) {
     precondition(deflater == nil)
     deflater = Deflater(offer: offer, forClient: isClient)
   }
 
-  mutating func resetStatistics() -> WebSocket.Statistics {
-    let old = statistics
+  mutating func resetStatistics() {
     statistics = WebSocket.Statistics()
-    return old
   }
 
   private mutating func encode(as opcode: Opcode, payload: Data, using maskKey: UInt32? = nil,
@@ -203,7 +187,7 @@ internal struct InputFramer {
   private var inflater: Inflater? = nil
   private(set) var statistics = WebSocket.Statistics()
 
-  init(forClient isClient: Bool, maximumMessageSize: Int, compression: CompressionOffer? = nil) {
+  init(forClient isClient: Bool, maximumMessageSize: Int, compression: DeflateParameters? = nil) {
     self.isClient = isClient
     self.maximumMessageSize = maximumMessageSize
     if let compression = compression {
@@ -369,22 +353,20 @@ internal struct InputFramer {
     fatal = false
   }
 
-  mutating func enableCompression(offer: CompressionOffer) {
+  mutating func enableCompression(offer: DeflateParameters) {
     precondition(inflater == nil)
     inflater = Inflater(offer: offer, forClient: isClient)
   }
 
-  mutating func resetStatistics() -> WebSocket.Statistics {
-    let old = statistics
+  mutating func resetStatistics() {
     statistics = WebSocket.Statistics()
-    return old
   }
 
   private mutating func acceptPayloadLength() -> Bool {
     if opcode!.isMessage {
       let remaining = maximumMessageSize - (messagePayload?.count ?? 0)
       guard remaining >= payloadLength else {
-        emit(frame: .policyViolation(.maximumMessageSizeExceeded))
+        emit(frame: .messageTooBig)
         return false
       }
       state = masked ? .maskKey0 : .messagePayload

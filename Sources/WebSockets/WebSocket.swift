@@ -11,29 +11,6 @@ import Foundation
 /// `WebSocket` is a an `AsyncSequence` that allows you to iterate over and react to events that occur on the connection, such as text or binary data
 /// received from the other endpoint. Each websocket should have a single, dedicated `Task` that processes events from that websocket. However, the rest of
 /// the API, such as ``WebSocket/send(text:compress:)`` and ``WebSocket/close(with:reason:)`` is designed to be used from any task or thread.
-///
-/// The following is a simple example:
-///
-/// ```swift
-/// let socket = WebSocket(url: URL("wss://echo.websocket.events")!)
-/// do {
-///   for try await event in socket {
-///     switch event {
-///       case .open(_):
-///         print("Successfully opened the WebSocket")
-///         await socket.send(text: "Hello, world")
-///       case .text(let str):
-///         print("Received text: \(str)")
-///       case .close(code: let code, reason: _, wasClean: _):
-///         print("Closed with code: \(code)")
-///       default:
-///         print("Miscellaneous event: \(event)")
-///     }
-///   }
-/// } catch {
-///   print("An error occurred connecting to the remote endpoint: \(error)")
-/// }
-/// ```
 public actor WebSocket {
   /// Options that can be set for a `WebSocket` instance.
   public struct Options {
@@ -198,7 +175,7 @@ public actor WebSocket {
     /// The content type of the response body, if any.
     public let contentType: ContentType?
 
-    // The response body if one was provided.
+    /// The response body if one was provided.
     public let content: Data?
   }
 
@@ -230,7 +207,7 @@ public actor WebSocket {
   /// Statistics about data sent or received by a WebSocket.
   ///
   /// Note that these counters will wrap if they overflow. The fact that they're stored as 64-bit  integers makes that unlikely, but in very extreme use cases, it
-  /// might be necessary to call ``WebSocket/resetStatistics()`` to sample and reset the statistics at regular intervals if accurate metrics are required.
+  /// might be necessary to sample and reset the statistics at regular intervals if accurate metrics are required.
   public struct Statistics: Equatable {
     /// The number of control frames transferred.
     ///
@@ -238,24 +215,32 @@ public actor WebSocket {
     public var controlFrameCount: Int64 = 0
 
     /// The number of textual messages transferred.
+    ///
+    /// Note that this total includes both uncompressed and compressed messages.
     public var textMessageCount: Int64 = 0
 
     /// The number of binary messages transferred.
+    ///
+    /// Note that this total includes both uncompressed and compressed messages.
     public var binaryMessageCount: Int64 = 0
 
-    /// The total number of textual message payload bytes transferred.
+    /// The total number of UTF-8 code units transferred as part of textual messages.
+    ///
+    /// Note that this total includes both uncompressed and compressed messages.
     public var textBytesTransferred: Int64 = 0
 
-    /// The total number of binary message payload bytes transferred.
+    /// The total number of bytes transferred as part of binary messages.
+    ///
+    /// Note that this total includes the payload of both uncompressed and compressed messages.
     public var binaryBytesTransferred: Int64 = 0
 
     /// The number of compressed textual messages transferred.
     public var compressedTextMessageCount: Int64 = 0
 
-    /// The total number of compressed textual message payload bytes transferred.
+    /// The total number of bytes transferred by compressed textual messages.
     public var compressedTextBytesTransferred: Int64 = 0
 
-    /// The total number of textual message payload bytes that did not need to be transferred due to compression.
+    /// The total number of bytes saved by compressing textual messages.
     ///
     /// This counter may be negative if compression is actually *increasing* the aggregate payload size. This would be an unexpected outcome for
     /// text but would indicate that compression should probably be disabled for that particular use caes.
@@ -264,10 +249,10 @@ public actor WebSocket {
     /// The number of compressed binary messages transferred.
     public var compressedBinaryMessageCount: Int64 = 0
 
-    /// The total number of compressed binary message payload bytes transferred.
+    /// The total number of bytes transferred by compressed binary messages.
     public var compressedBinaryBytesTransferred: Int64 = 0
 
-    /// The total number of binary message payload bytes that did not need to be transferred due to compression.
+    /// The total number of bytes saved by compressing binary messages.
     ///
     /// This counter may be negative if compression is actually *increasing* the aggregate payload size. This often indicates that pre-compressed data,
     /// such as an image or video, is being transferred without disabling WebSocket compression for at least those types of messages.
@@ -330,7 +315,7 @@ public actor WebSocket {
   /// - Parameter handshakeResult: The result of the handshake.
   /// - Parameter compression: The negotiated compression offer.
   /// - Parameter options: The options.
-  init(url: URL, connection: Connection, handshakeResult: HandshakeResult, compression: CompressionOffer?, options: Options) {
+  init(url: URL, connection: Connection, handshakeResult: HandshakeResult, compression: DeflateParameters?, options: Options) {
     self.url = url
     self.options = options
     self.connection = connection
@@ -363,15 +348,7 @@ public actor WebSocket {
 
   /// Sends a binary message to the other endpoint.
   ///
-  /// This asynchronous function returns `true` as soon as the message is successfully submitted to the network stack on the local host. It is important to
-  /// understand that this does not indicate that the message made it through the network to the other endpoint. This function can return `false` for
-  /// several different reasons:
-  ///
-  /// * The connection has reached the `closing` or `closed` state.
-  /// * An error occurred while submitting the message. Any such error is always fatal to the connection and is therefore reported via a `close` event
-  ///   to the event reader.
-  ///
-  /// If this function is called before a connection has been established, the message will be queued and sent when the socket reaches the `open` state.
+  /// See the discussion for ``WebSocket/send(text:compress:)`` for more information about the semantics of this operation.
   /// - Parameter data: The data to send.
   /// - Parameter compress: The compression mode for the message.
   /// - Returns: `true` if the data was successfully submitted for transmission, or `false` if an error occurred or the connection was closed.
@@ -383,15 +360,7 @@ public actor WebSocket {
 
   /// Sends a `ping` frame to the other endpoint.
   ///
-  /// This asynchronous function returns `true` as soon as the frame is successfully submitted to the network stack on the local host. It is important to
-  /// understand that this does not indicate that the frame made it through the network to the other endpoint. This function can return `false` for
-  /// several different reasons:
-  ///
-  /// * The connection has reached the `closing` or `closed` state.
-  /// * An error occurred while submitting the frame. Any such error is always fatal to the connection and is therefore reported via a `close` event
-  ///   to the event reader.
-  ///
-  /// If this function is called before a connection has been established, the frame will be queued and sent when the socket reaches the `open` state.
+  /// See the discussion for ``WebSocket/send(text:compress:)`` for more information about the semantics of this operation.
   /// - Parameter data: Any arbitrary data to include with the frame. The WebSocket protocol limits the size of this data to 125 bytes. If the
   ///   specified data exceeds the limit, only the first 125 bytes are sent.
   /// - Returns: Whether the frame was successfully submitted for transmission.
@@ -402,15 +371,7 @@ public actor WebSocket {
 
   /// Sends a `pong` frame to the other endpoint.
   ///
-  /// This asynchronous function returns `true` as soon as the frame is successfully submitted to the network stack on the local host. It is important to
-  /// understand that this does not indicate that the frame made it through the network to the other endpoint. This function can return `false` for
-  /// several different reasons:
-  ///
-  /// * The connection has reached the `closing` or `closed` state.
-  /// * An error occurred while submitting the frame. Any such error is always fatal to the connection and is therefore reported via a `close` event
-  ///   to the event reader.
-  ///
-  /// If this function is called before a connection has been established, the frame will be queued and sent when the socket reaches the `open` state.
+  /// See the discussion for ``WebSocket/send(text:compress:)`` for more information about the semantics of this operation.
   /// - Parameter data: Any arbitrary data to include with the frame. The WebSocket protocol limits the size of this data to 125 bytes. If the
   ///   specified data exceeds the limit, only the first 125 bytes are sent.
   /// - Returns: Whether the frame was successfully submitted for transmission.
@@ -421,12 +382,12 @@ public actor WebSocket {
 
   /// Closes the socket.
   ///
-  /// The behavior of this function depends on the ready state of the socket:
+  /// The behavior of this function depends on the ``WebSocket/readyState-swift.property`` of the socket:
   ///
   /// * If `initialized`, the socket will immediately enter the `closed` state, and the event sequence will finish without producing any events.
   /// * If `connecting`, the task will suspend until the opening handshake completes. If the handshake is successful, processing will resume
   ///   according to the logic discussed for the `open` state below. If the handshake fails, the underlying connection will be canceled, the
-  ///   socket will enter the `closed`state, and the event sequence will finish with an error.
+  ///   socket will enter the `closed` state, and the event sequence will finish with an error.
   /// * If `open`, the socket will immediately enter the `closing` state, and a `close` frame will be sent to the other endpoint. Once a `close`
   ///   frame is received from the other endpoint, or if the configured `closingHandshakeTimeout` expires prior to receiving a response,
   ///   the underlying connection will be closed, and the socket will enter the `closed` state. In every case, a `close` event will be added to
@@ -465,21 +426,17 @@ public actor WebSocket {
     }
   }
 
-  /// Statistics about data received by the WebSocket.
-  public var inputStatistics: Statistics {
-    inputFramer.statistics
-  }
-
-  /// Statistics about data sent by the WebSocket.
-  public var outputStatistics: Statistics {
-    outputFramer.statistics
-  }
-
-  /// Resets input and output statistics, setting all counters to 0.
+  /// Samples and optionally resets  input and output statistics.
+  /// - Parameter reset: Whether to reset all counters to 0 after taking the sample.
   /// - Returns: The input and output statistics just prior to the reset.
   ///
-  public func resetStatistics() -> (Statistics, Statistics) {
-    return (inputFramer.resetStatistics(), outputFramer.resetStatistics())
+  public func sampleStatistics(reset: Bool = false) -> (Statistics, Statistics) {
+    let inputStatistics = inputFramer.statistics, outputStatistics = outputFramer.statistics
+    if (reset) {
+      inputFramer.resetStatistics()
+      outputFramer.resetStatistics()
+    }
+    return (input: inputStatistics, output: outputStatistics)
   }
 }
 
@@ -704,8 +661,8 @@ private extension WebSocket {
         return .pong(data)
       case .protocolError(let error):
         return await abortConnection(with: .protocolError, reason: error.debugDescription)
-      case .policyViolation(let error):
-        return await abortConnection(with: .policyViolation, reason: error.debugDescription)
+      case .messageTooBig:
+        return await abortConnection(with: .messageTooBig, reason: "Maximum message size exceeded")
     }
   }
 

@@ -3,18 +3,40 @@
 
 import Foundation
 
+/// An HTTP method.
 public enum HTTPMethod: Equatable, RawRepresentable {
+
+  /// The `GET` method.
   case get
+
+  /// The `HEAD` method.
   case head
+
+  /// The `POST` method.
   case post
+
+  /// The `PUT` method.
   case put
+
+  /// The `DELETE` method.
   case delete
+
+  /// The `CONNECT` method.
   case connect
+
+  /// The `OPTIONS` method.
   case options
+
+  /// The `TRACE` method.
   case trace
+
+  /// The `PATCH` method.
   case patch
+
+  /// An HTTP method not known by this implementation.
   case other(String)
 
+  /// Initializes an `HTTPMethod` from its string equivalent.
   public init(rawValue: String) {
     let name = rawValue.uppercased()
     switch name {
@@ -41,6 +63,7 @@ public enum HTTPMethod: Equatable, RawRepresentable {
     }
   }
 
+  /// The string representation of the method.
   public var rawValue: String {
     switch self {
       case .get:

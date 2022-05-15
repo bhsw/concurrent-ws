@@ -39,7 +39,7 @@ class WebSocketTests: XCTestCase {
     ]
     XCTAssertEqual(events, expectedEvents)
 
-    let inStats = await socket.inputStatistics, outStats = await socket.outputStatistics
+    let (inStats, outStats) = await socket.sampleStatistics()
     var expectedStats = WebSocket.Statistics()
     expectedStats.controlFrameCount = 1
     expectedStats.textMessageCount = 2
@@ -78,7 +78,7 @@ class WebSocketTests: XCTestCase {
     ]
     XCTAssertEqual(events, expectedEvents)
 
-    let inStats = await socket.inputStatistics, outStats = await socket.outputStatistics
+    let (inStats, outStats) = await socket.sampleStatistics()
     var expectedStats = WebSocket.Statistics()
     expectedStats.controlFrameCount = 1
     expectedStats.textMessageCount = 2
@@ -117,7 +117,7 @@ class WebSocketTests: XCTestCase {
     ]
     XCTAssertEqual(events, expectedEvents)
 
-    let inStats = await socket.inputStatistics, outStats = await socket.outputStatistics
+    let (inStats, outStats) = await socket.sampleStatistics()
     var expectedStats = WebSocket.Statistics()
     expectedStats.controlFrameCount = 1
     expectedStats.textMessageCount = 2
@@ -160,7 +160,7 @@ class WebSocketTests: XCTestCase {
     ]
     XCTAssertEqual(events, expectedEvents)
 
-    let inStats = await socket.inputStatistics, outStats = await socket.outputStatistics
+    let (inStats, outStats) = await socket.sampleStatistics()
     var expectedStats = WebSocket.Statistics()
     expectedStats.controlFrameCount = 1
     expectedStats.binaryMessageCount = 3
@@ -171,7 +171,6 @@ class WebSocketTests: XCTestCase {
     XCTAssertEqual(inStats, expectedStats)
     XCTAssertEqual(outStats, expectedStats)
   }
-
 
   func testPingOnLocalServer() async throws {
     let server = TestServer()
@@ -227,7 +226,7 @@ class WebSocketTests: XCTestCase {
     let expected: [WebSocket.Event] = [
       .open(.init(subprotocol: nil, compressionAvailable: false, extraHeaders: [:])),
       .binary(validData),
-      .close(code: .policyViolation, reason: "Maximum message size exceeded", wasClean: false)
+      .close(code: .messageTooBig, reason: "Maximum message size exceeded", wasClean: false)
     ]
     XCTAssertEqual(events, expected)
   }
@@ -603,7 +602,9 @@ class WebSocketTests: XCTestCase {
   }
 
   func randomDataTest(url: URL, sizes: [Int]) async throws {
-    let socket = WebSocket(url: url)
+    var options = WebSocket.Options()
+    options.enableCompression = false
+    let socket = WebSocket(url: url, options: options)
     let expected = sizes.map { randomData(size: $0) }
     var received: [Data] = []
     var receivedClose = false
