@@ -6,6 +6,7 @@ featuring an API based on Swift Concurrency (tasks and async/await). The minimum
 
 **IMPORTANT**: This software should be considered alpha-quality at this time, as the API is subject to change at any time.
 
+[![Swift](https://github.com/bhsw/concurrent-ws/actions/workflows/swift.yml/badge.svg)](https://github.com/bhsw/concurrent-ws/actions/workflows/swift.yml)
 
 ## Features
 
