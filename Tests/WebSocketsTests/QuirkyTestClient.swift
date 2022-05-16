@@ -149,7 +149,7 @@ actor QuirkyTestClient {
       case .binary(let data):
         return .binary(data)
       case .close(let code, let reason):
-        return .close(code: code, reason: reason, wasClean: false)
+        return .close(code: code ?? .noStatusReceived, reason: reason, wasClean: false)
       case .ping(let data):
         return .ping(data)
       case .pong(let data):

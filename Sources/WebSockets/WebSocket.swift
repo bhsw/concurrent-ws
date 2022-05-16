@@ -286,8 +286,6 @@ public actor WebSocket {
   private var inputFramer: InputFramer
   private var didSendCloseFrame = false
   private var didReceiveCloseFrame = false
-  private var pendingCloseCode: CloseCode?
-  private var pendingCloseReason: String?
   private var handshakeTimerTask: Task<Void, Never>?
   private var openingHandshakeDidExpire = false
   private var pendingOpen: Result<Event?, Error>?
@@ -397,10 +395,11 @@ public actor WebSocket {
   /// It is important to keep in mind that this function does not wait for the socket to finish closing. That effect can be achieved by calling this function
   /// and then `await`ing the result of the `Task` that is processing events emitted by the socket.
   /// - Parameters:
-  ///   - code: The close code. Note that any restricted close codes are silently converted to `.normalClosure`.
+  ///   - code: The close code. If `nil`, a `close` frame with no payload will be sent to the remote endpoint. Note that any restricted close codes
+  ///     are silently converted to `nil`.
   ///   - reason: The reason. The WebSocket protocol limits the reason to 123 UTF-8 code units. If this limit is exceeded, the reason will be truncated
-  ///     to fit as many full Unicode code points as possible.
-  public func close(with code: CloseCode = .normalClosure, reason: String = "") async {
+  ///     to fit as many full Unicode code points as possible. This parameter is ignored if the close code is `nil`.
+  public func close(with code: CloseCode? = .normalClosure, reason: String = "") async {
     switch readyState {
       case .initialized:
         readyState = .closed
@@ -409,9 +408,7 @@ public actor WebSocket {
         await close(with: code, reason: reason)
       case .open:
         readyState = .closing
-        pendingCloseCode = code.isRestricted ? .normalClosure : code
-        pendingCloseReason = reason
-        if await connection!.send(multiple: outputFramer.encode(.close(pendingCloseCode!, reason))) {
+        if await connection!.send(multiple: outputFramer.encode(.close((code?.isRestricted ?? false) ? nil : code, reason))) {
           didSendCloseFrame = true
         }
         handshakeTimerTask = Task(priority: TaskPriority.low) {
@@ -620,12 +617,11 @@ private extension WebSocket {
       }
       // The server disconnected without sending a close frame.
       readyState = .closing
-      return finishClose()
+      return finishClose(with: .abnormalClosure, reason: "The remote endpoint disconnected unexpectedly")
     } catch let error as WebSocketError {
       // The connection threw an error.
-      pendingCloseReason = error.localizedDescription
       readyState = .closing
-      return finishClose()
+      return finishClose(with: .abnormalClosure, reason: error.localizedDescription)
     } catch {
       // This should never happen, since connections are only supposed to throw WebSocketErrors.
       fatalError("Connection in only allowed to throw WebSocketError")
@@ -646,12 +642,10 @@ private extension WebSocket {
       case .close(let code, let reason):
         didReceiveCloseFrame = true
         if (!didSendCloseFrame) {
-          pendingCloseCode = code;
-          pendingCloseReason = reason
           readyState = .closing
           await connection!.send(multiple: outputFramer.encode(.close(code, reason)))
         }
-        return finishClose()
+        return finishClose(with: code ?? .noStatusReceived, reason: reason)
       case .ping(let data):
         if (options.automaticallyRespondToPings) {
           await connection!.send(multiple: outputFramer.encode(.pong(data)))
@@ -692,24 +686,22 @@ private extension WebSocket {
   /// - Returns: The `close` event.
   func abortConnection(with code: CloseCode, reason: String) async -> Event {
     precondition(readyState == .open || readyState == .closing)
-    pendingCloseCode = code
-    pendingCloseReason = reason
     readyState = .closing
     await connection!.send(multiple: outputFramer.encode(.close(code, reason)))
-    return finishClose()
+    return finishClose(with: code, reason: reason)
   }
 
   /// Finishes closing the connection.
+  /// - Parameter code - The close code.
+  /// - Parameter reason - The close reason.
   /// - Returns: The `close` event.
-  func finishClose() -> Event {
+  func finishClose(with code: CloseCode, reason: String) -> Event {
     precondition(readyState == .closing)
     cancelHandshakeTimer()
     connection!.close()
     connection = nil
     readyState = .closed
-    return .close(code: pendingCloseCode ?? .abnormalClosure,
-                  reason: pendingCloseReason ?? "The endpoint disconnected unexpectedly",
-                  wasClean: didSendCloseFrame && didReceiveCloseFrame)
+    return .close(code: code, reason: reason, wasClean: didSendCloseFrame && didReceiveCloseFrame)
   }
 
   /// Cancels the handshake timer if it is running.

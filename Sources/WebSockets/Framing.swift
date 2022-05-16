@@ -8,7 +8,7 @@ import Foundation
 internal enum Frame {
   case text(String)
   case binary(Data)
-  case close(WebSocket.CloseCode, String)
+  case close(WebSocket.CloseCode?, String)
   case ping(Data)
   case pong(Data)
   case protocolError(ProtocolError)
@@ -108,17 +108,19 @@ internal struct OutputFramer {
       case .close(let code, let reason):
         statistics.controlFrameCount += 1
         var payload = Data()
-        payload.appendBigEndian(code.rawValue)
-        var reasonBytes = reason.data(using: .utf8)!
-        if reasonBytes.count > maxCloseReasonSize {
-          // Truncate the UTF-8 data if it exceeds the space available.
-          reasonBytes.removeSubrange(maxCloseReasonSize...)
-          // Ensure that we end on a codepoint boundary.
-          while String(data: reasonBytes, encoding: .utf8) == nil {
-            reasonBytes.removeLast()
+        if let code = code {
+          payload.appendBigEndian(code.rawValue)
+          var reasonBytes = reason.data(using: .utf8)!
+          if reasonBytes.count > maxCloseReasonSize {
+            // Truncate the UTF-8 data if it exceeds the space available.
+            reasonBytes.removeSubrange(maxCloseReasonSize...)
+            // Ensure that we end on a codepoint boundary.
+            while String(data: reasonBytes, encoding: .utf8) == nil {
+              reasonBytes.removeLast()
+            }
           }
+          payload.append(reasonBytes)
         }
-        payload.append(reasonBytes)
         return encode(as: .close, payload: payload, using: key)
       case .ping(let data):
         statistics.controlFrameCount += 1
@@ -158,11 +160,14 @@ internal struct OutputFramer {
     }
     if let key = maskKey {
       header.appendBigEndian(key)
+      guard !payload.isEmpty else {
+        return [ header ]
+      }
       var maskedPayload = payload
       maskedPayload.mask(using: key, range:maskedPayload.startIndex..<maskedPayload.endIndex)
       return [ header, maskedPayload ]
     }
-    return [ header, payload ]
+    return payload.isEmpty ? [ header ] : [ header, payload ]
   }
 }
 
@@ -431,11 +436,15 @@ internal struct InputFramer {
         return .binary(payload)
       case .close:
         statistics.controlFrameCount &+= 1
-        let code: UInt16 = payload.count >= 2 ? (UInt16(payload[0]) << 8) | UInt16(payload[1]) : 1005
-        guard let reason = String(bytes: payload.count >= 2 ? payload[2...] : payload, encoding: .utf8) else {
+        if payload.count < 2 {
+          return .close(nil, "")
+        }
+        let code = WebSocket.CloseCode(rawValue: (UInt16(payload[payload.startIndex]) << 8) |
+                                                  UInt16(payload[payload.startIndex + 1]))
+        guard let reason = String(data: payload[(payload.startIndex + 2)...], encoding: .utf8) else {
           return .protocolError(.invalidUTF8)
         }
-        return .close(.init(rawValue: code), reason)
+        return .close(code, reason)
       case .ping:
         statistics.controlFrameCount &+= 1
         return .ping(payload)

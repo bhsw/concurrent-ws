@@ -112,7 +112,7 @@ final class Connection: AsyncSequence {
       dispatchQueue.async { [self] in
         connection.batch {
           for data in multiple.prefix(multiple.count - 1) {
-            connection.send(content: data, completion: .contentProcessed { error in
+            connection.send(content: data, isComplete: false, completion: .contentProcessed { error in
             })
           }
           connection.send(content: multiple.last, completion: .contentProcessed { error in
