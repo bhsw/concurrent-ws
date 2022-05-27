@@ -571,6 +571,12 @@ private extension WebSocket {
             continue
         }
       }
+      // The `AsyncThrowingStream` used by Connection finishes the stream (yielding `nil`) if the Task is
+      // canceled. However, we want an error to be thrown in this instance so that it's not confused with
+      // the server simply dropping the connection.
+      if Task.isCancelled {
+        throw WebSocketError.canceled
+      }
       if openingHandshakeDidExpire {
         throw WebSocketError.timeout
       }

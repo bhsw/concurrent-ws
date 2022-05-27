@@ -53,6 +53,9 @@ public enum WebSocketError: Error {
   /// The handshake did not complete within the specified timeframe.
   case timeout
 
+  /// The `Task` performing the handshake was canceled.
+  case canceled
+
   /// The redirect limit was exceeded. This usually indicates a redirect loop.
   case maximumRedirectsExceeded
 
@@ -99,6 +102,8 @@ extension WebSocketError: CustomDebugStringConvertible {
         return "Unexpected disconnect"
       case .timeout:
         return "WebSocket handshake timed out"
+      case .canceled:
+        return "The task performing the WebSocket handshake was canceled"
       case .maximumRedirectsExceeded:
         return "Maximum number of HTTP redirects exceeded"
       case .invalidRedirectLocation(let location):

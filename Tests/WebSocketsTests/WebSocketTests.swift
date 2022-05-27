@@ -550,6 +550,27 @@ class WebSocketTests: XCTestCase {
     XCTAssert(events == expected)
   }
 
+  func testHandshakeCancellation() async throws {
+    let server = TestServer()
+    defer {
+      Task {
+        await server.stop()
+      }
+    }
+    let socket = WebSocket(url: try await server.start(path: "/test"))
+    let t = Task {
+      await socket.send(text: "Hello")
+    }
+    t.cancel()
+    let _ = await t.value
+    do {
+      for try await _ in socket {
+      }
+      XCTFail("Expected an exception ")
+    } catch WebSocketError.canceled {
+    }
+  }
+
   func expectCloseCode(quirk: QuirkyTestServer.Quirk, code: WebSocket.CloseCode, reason: String? = nil) async throws {
     let server = QuirkyTestServer(with: quirk)
     defer {
