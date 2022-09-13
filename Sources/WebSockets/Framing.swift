@@ -518,7 +518,7 @@ fileprivate extension Data {
       UInt8(key >> 8 & 255),
       UInt8(key & 255)
     ]
-    self.withUnsafeMutableBytes { ptr in
+    self.withUnsafeMutableBytes { (ptr: UnsafeMutableRawBufferPointer) in
       var index = range.startIndex
       var maskIndex = 0
       while index < range.endIndex {
